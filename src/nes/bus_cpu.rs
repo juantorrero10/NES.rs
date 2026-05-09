@@ -1,16 +1,14 @@
-use std::{cell::{RefCell, RefMut}, ops::Deref, rc::Rc};
-
 use thiserror::Error;
 
 // RAM Constants
 const ADDR_RAM_START: u16 = 0x0000;
-const ADDR_RAM_END  : u16 = 0x1FFF;
-const SIZE_RAM      : usize = 0x0800;
+const ADDR_RAM_END: u16 = 0x1FFF;
+const SIZE_RAM: usize = 0x0800;
 
 // PPU register constants
 const ADDR_PPU_REG_START: u16 = 0x2000;
-const ADDR_PPU_REG_END  : u16 = 0x2007;
-const SIZE_PPU_REG      : usize = 0x8;
+const ADDR_PPU_REG_END: u16 = 0x2007;
+const SIZE_PPU_REG: usize = 0x8;
 const ADDITIONAL_PPU_REG: u16 = 0x4014;
 
 // Controler IO constants
@@ -19,7 +17,7 @@ const ADDR_IO_END: u16 = 0x401F;
 const SIZE_IO: usize = 0x20;
 
 const ADDR_ROM_START: u16 = 0x8000;
-const ADDR_ROM_END:   u16 = 0xFFFB;
+const ADDR_ROM_END: u16 = 0xFFFB;
 
 #[derive(Error, Debug)]
 pub enum BusCpuError {
@@ -44,11 +42,11 @@ pub struct BusCpu {
 impl BusCpu {
     pub fn new() -> BusCpu {
         // TODO: Cart
-        BusCpu { 
-            ram: [0u8; SIZE_RAM], 
-            ppu_reg: [0u8; SIZE_PPU_REG], 
-            ppu_additional_reg: 0, 
-            controller_io: [0u8; SIZE_IO], 
+        BusCpu {
+            ram: [0u8; SIZE_RAM],
+            ppu_reg: [0u8; SIZE_PPU_REG],
+            ppu_additional_reg: 0,
+            controller_io: [0u8; SIZE_IO],
             cart_ram: Vec::new(),
             cart_prg: Vec::new(),
             fake_value: 0,
@@ -58,25 +56,35 @@ impl BusCpu {
     fn resolve_addr(&mut self, mut addr: u16) -> Result<&mut u8, BusCpuError> {
         let input_addr = addr;
         match input_addr {
-            ADDR_RAM_START ..= ADDR_RAM_END => {
+            ADDR_RAM_START..=ADDR_RAM_END => {
                 addr &= SIZE_RAM as u16 - 1;
-                return self.ram.get_mut(addr as usize)
-                    .ok_or(BusCpuError::AddrError(input_addr));
-            },
-            ADDR_ROM_START ..= ADDR_ROM_END => {
-                addr &= !(1 << 15);
-                return self.cart_prg.get_mut(addr as usize)
+                return self
+                    .ram
+                    .get_mut(addr as usize)
                     .ok_or(BusCpuError::AddrError(input_addr));
             }
-            0xFFFC => { self.fake_value = 0x00; return Ok(&mut self.fake_value); },
-            0xFFFD => { self.fake_value = 0x80; return Ok(&mut self.fake_value); },
-            _ => Err(BusCpuError::AddrRangeNotImplemented(input_addr))
+            ADDR_ROM_START..=ADDR_ROM_END => {
+                addr &= !(1 << 15);
+                return self
+                    .cart_prg
+                    .get_mut(addr as usize)
+                    .ok_or(BusCpuError::AddrError(input_addr));
+            }
+            0xFFFC => {
+                self.fake_value = 0x00;
+                return Ok(&mut self.fake_value);
+            }
+            0xFFFD => {
+                self.fake_value = 0x80;
+                return Ok(&mut self.fake_value);
+            }
+            _ => Err(BusCpuError::AddrRangeNotImplemented(input_addr)),
         }
     }
 
     #[inline(always)]
     pub fn read(&mut self, addr: u16) -> Result<u8, BusCpuError> {
-        return Ok(*(self.resolve_addr(addr)?))
+        return Ok(*(self.resolve_addr(addr)?));
     }
 
     #[cfg(debug_assertions)]
@@ -95,5 +103,4 @@ impl BusCpu {
         *(self.resolve_addr(addr)?) = data;
         Ok(())
     }
-    
 }
