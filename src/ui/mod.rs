@@ -1,15 +1,19 @@
 use std::fmt::Write;
 
-use imgui::{FontId, StyleVar, WindowFlags, sys::ImGuiCond_FirstUseEver};
+use imgui::{FontId, StyleColor, StyleVar, WindowFlags, sys::ImGuiCond_FirstUseEver};
 use log::info;
-use raylib::{RaylibHandle, RaylibThread, color::Color, drawing::{RaylibDraw, RaylibTextureModeExt}, texture::{RaylibRenderTexture2D, RaylibTexture2D, RenderTexture2D}};
+use raylib::{
+    RaylibHandle, RaylibThread,
+    color::Color,
+    drawing::{RaylibDraw, RaylibTextureModeExt},
+    texture::{RaylibRenderTexture2D, RaylibTexture2D, RenderTexture2D},
+};
 use raylib_imgui_rs::Renderer;
 
 use crate::{nes::cpu::Flag6502, ui::framestate::FrameState};
 
 pub mod framestate;
-
-
+mod window_dissasm;
 
 struct Panel {
     pos: [f32; 2],
@@ -100,17 +104,89 @@ impl PanelProportions {
 
 pub struct RaylibInfo(RaylibHandle, RaylibThread, RenderTexture2D, Vec<u8>);
 
+pub struct Options {
+    disassm_focus_pc: bool,
+    dissasm_from: u16,
+    dissasm_to: u16,
+    dissasm_show: u16,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Self {
+            disassm_focus_pc: true,
+            dissasm_from: 0,
+            dissasm_to: 200,
+            dissasm_show: 200,
+        }
+    }
+}
+
+type Fonts = [FontId; 3];
+pub struct Theme {
+    pub bg: [f32; 4],
+    pub darker_bg: [f32; 4],
+    pub game_screen_bg: [f32; 4],
+    pub label: [f32; 4],
+    pub title: [f32; 4],
+    pub signal_low: [f32; 4],
+    pub signal_high: [f32; 4],
+    pub highlight: [f32; 4],
+    pub highlight2: [f32; 4],
+    pub value: [f32; 4],
+    pub button: [f32; 4],
+}
+
+/**
+*      let label_color = [0.75, 0.8, 0.82, 0.6];
+       let window_title_color = [0.72, 0.8, 0.82, 0.9];
+       let signal_low_color = [1.0, 0.3, 0.3, 1.0];
+       let signal_high_color = [0.3, 1.0, 0.3, 1.0];
+       let highlight_color = [0.25, 0.75, 0.87, 0.9];
+       let highlight2_color = [0.98, 0.902, 0.337, 0.9];
+       let value_color = [1.0, 1.0, 1.0, 0.9];
+       let button_bg_color = [0.369, 0.361, 0.431, 1.0];
+       let darker_bg_color = [0.049, 0.065, 0.092, 1.0f32];
+*/
+
+impl Default for Theme {
+    fn default() -> Self {
+        Self {
+            bg: [0.1, 0.12, 0.15, 1.0],
+            darker_bg: [0.049, 0.065, 0.092, 1.0f32],
+            game_screen_bg: [0.049, 0.065, 0.092, 1.0f32],
+            label: [0.75, 0.8, 0.82, 0.6],
+            title: [0.72, 0.8, 0.82, 0.9],
+            signal_low: [1.0, 0.3, 0.3, 1.0],
+            signal_high: [0.3, 1.0, 0.3, 1.0],
+            highlight: [0.25, 0.75, 0.87, 0.9],
+            highlight2: [0.98, 0.902, 0.337, 0.9],
+            value: [1.0, 1.0, 1.0, 0.9],
+            button: [0.369, 0.361, 0.431, 1.0],
+        }
+    }
+}
+
 pub struct AppUI {
     pub ctx: imgui::Context,
     pub renderer: Renderer,
     pub raylib: RaylibInfo,
     pub dev_mode: bool,
-    pub fonts: [FontId; 2],
+    theme: Theme,
+    fonts: Fonts,
+    options: Options,
     text_buffer: String,
+    addr_buffer: String,
 }
 
 impl AppUI {
     pub fn new() -> Self {
+        AppUI::initialize(Theme::default())
+    }
+    pub fn with_theme(t: Theme) -> Self {
+        AppUI::initialize(t)
+    }
+    fn initialize(t: Theme) -> Self {
         let (mut rl, thread) = raylib::init()
             .size(1280, 720)
             .title("Nes")
@@ -120,7 +196,7 @@ impl AppUI {
         ctx.io_mut().config_flags |= imgui::ConfigFlags::DOCKING_ENABLE;
         let style = ctx.style_mut();
         style.window_rounding = 0.0;
-        style.colors[imgui::StyleColor::WindowBg as usize] = [0.1, 0.12, 0.15, 1.0]; // Darker background
+        style.colors[imgui::StyleColor::WindowBg as usize] = t.bg; // Darker background
         let font_size = 18.0; // Increase this for larger text
         let f0 = ctx.fonts().add_font(&[imgui::FontSource::TtfData {
             data: include_bytes!("C:\\Windows\\Fonts\\consola.ttf"), // This embeds it into the binary
@@ -138,22 +214,34 @@ impl AppUI {
                 ..imgui::FontConfig::default()
             }),
         }]);
-        
+
+        let f2 = ctx.fonts().add_font(&[imgui::FontSource::TtfData {
+            data: include_bytes!("C:\\Windows\\Fonts\\consolai.ttf"), // 'consolai' is the italic version
+            size_pixels: font_size,
+            config: None,
+        }]);
+
         // Re-build the font atlas (required after adding fonts)
         let mut renderer = Renderer::create(&mut ctx, &mut rl, &thread);
         renderer.reload_fonts(&mut ctx, &mut rl, &thread);
 
-        let screen = rl.load_render_texture(&thread, 256, 240).expect("Couldn't make texture");
+        let screen = rl
+            .load_render_texture(&thread, 256, 240)
+            .expect("Couldn't make texture");
         screen.set_texture_filter(&thread, raylib::ffi::TextureFilter::TEXTURE_FILTER_POINT);
         Self {
+            options: Options::default(),
             ctx,
             renderer,
             raylib: RaylibInfo(rl, thread, screen, vec![0u8; 256 * 240 * 4]),
             dev_mode: true,
             text_buffer: String::with_capacity(128),
-            fonts: [f0, f1]
+            addr_buffer: String::with_capacity(5),
+            fonts: [f0, f1, f2],
+            theme: t,
         }
     }
+
 
     pub fn update(&mut self, st: FrameState) {
         self.text_buffer.clear();
@@ -163,7 +251,7 @@ impl AppUI {
             ($ui:expr, $fmt:literal, $($arg:tt)*) => {
                 buffer.clear();
                 let _ = std::fmt::Write::write_fmt(buffer, format_args!($fmt, $($arg)*)).expect("Fmt failed");
-                $ui.text(&buffer)
+                $ui.text_colored(self.theme.value, &buffer)
             };
         }
 
@@ -177,17 +265,20 @@ impl AppUI {
 
         self.renderer.update(&mut self.ctx, &mut self.raylib.0);
 
-         {
+        if st.screen.update {
             for i in (0..self.raylib.3.len()).step_by(4) {
                 let lum = rand::random::<u8>();
-                self.raylib.3[i]     = lum; // R
+                self.raylib.3[i] = lum; // R
                 self.raylib.3[i + 1] = lum; // G
                 self.raylib.3[i + 2] = lum; // B
                 self.raylib.3[i + 3] = 255; // A
             }
-            self.raylib.2.texture_mut().update_texture(&self.raylib.3).expect("Couldnt swap buffer");
+            self.raylib
+                .2
+                .texture_mut()
+                .update_texture(&self.raylib.3)
+                .expect("Couldnt swap buffer");
         }
-
 
         let ui = self.ctx.new_frame();
 
@@ -198,12 +289,17 @@ impl AppUI {
         ]; // Get the window size;
         let dims;
         if self.dev_mode {
-            dims = PanelProportions::new(window, 0.6, 0.6, 0.25, 0.33);
+            dims = PanelProportions::new(window, 0.7, 0.7, 0.25, 0.33);
         } else {
             dims = PanelProportions::new(window, 1.0, 1.0, 0.25, 0.33);
         }
 
-        if self.raylib.0.is_key_pressed(raylib::ffi::KeyboardKey::KEY_F) {
+        if self
+            .raylib
+            .0
+            .is_key_pressed(raylib::ffi::KeyboardKey::KEY_F)
+            && !ui.io().want_capture_keyboard
+        {
             self.dev_mode = match self.dev_mode {
                 true => false,
                 false => true,
@@ -217,10 +313,7 @@ impl AppUI {
             | imgui::WindowFlags::NO_SCROLLBAR
             | imgui::WindowFlags::NO_BRING_TO_FRONT_ON_FOCUS;
 
-        let label_color = [0.75, 0.8, 0.82, 0.6];
-        let highlight_color = [0.2, 0.7, 0.82, 1.0];
-        let value_color = [1.0, 1.0, 1.0, 0.9];
-
+        let _t = ui.push_style_color(StyleColor::WindowBg, self.theme.game_screen_bg);
         ui.window("Game")
             .flags(panel_flag)
             .position(dims.position_game_win(), imgui::Condition::Always)
@@ -242,18 +335,22 @@ impl AppUI {
                 let x_offset = (content_size[0] - draw_w) / 2.0;
                 let y_offset = (content_size[1] - draw_h) / 2.0;
                 ui.set_cursor_pos([ui.cursor_pos()[0] + x_offset, ui.cursor_pos()[1] + y_offset]);
-                
-                imgui::Image::new(imgui::TextureId::new(self.raylib.2.texture().id as usize), [draw_w, draw_h])
-                    .uv0([0.0, 1.0])
-                    .uv1([1.0, 0.0])
-                    .build(ui);
+
+                imgui::Image::new(
+                    imgui::TextureId::new(self.raylib.2.texture().id as usize),
+                    [draw_w, draw_h],
+                )
+                .uv0([0.0, 1.0])
+                .uv1([1.0, 0.0])
+                .build(ui);
             });
+        _t.pop();
         ui.window("Console")
             .flags(panel_flag)
             .position(dims.position_lower(), imgui::Condition::Always)
             .size(dims.size_lower(), imgui::Condition::Always)
             .build(|| {
-                ui.text("Console output will go here...");
+                ui.text_colored(self.theme.value, "Console output will go here...");
             });
         ui.window("CPU")
             .position(dims.position_right_upper(), imgui::Condition::Always)
@@ -262,7 +359,7 @@ impl AppUI {
             .build(|| {
                 ui.dummy([0.0, dims.size_right_upper()[1] * 0.01]);
                 ui.indent_by(dims.size_right_upper()[0] * 0.025);
-                ui.text_colored(label_color, "CPU INFO");
+                ui.text_colored(self.theme.title, "CPU INFO");
                 ui.separator();
                 ui.dummy([0.0, dims.size_right_upper()[1] * 0.01]);
                 ui.child_window("info")
@@ -273,24 +370,24 @@ impl AppUI {
                     .border(true)
                     .build(|| {
                         let f = ui.push_font(self.fonts[1]);
-                        ui.text_colored(label_color, "PC: ");
+                        ui.text_colored(self.theme.label, "PC: ");
                         ui.same_line();
-                        fmt_text!(ui, "${:04X}", st.cpu_info.regs.pc);
-                        ui.text_colored(label_color, "SP: ");
+                        fmt_text_colored!(ui, self.theme.value, "${:04X}", st.cpu_info.regs.pc);
+                        ui.text_colored(self.theme.label, "SP: ");
                         ui.same_line();
-                        fmt_text!(ui, "${:02X}", st.cpu_info.regs.sp);
-                        ui.text_colored(label_color, "A:  ");
+                        fmt_text_colored!(ui, self.theme.value, "${:02X}", st.cpu_info.regs.sp);
+                        ui.text_colored(self.theme.label, "A:  ");
                         ui.same_line();
-                        fmt_text!(ui, "${:02X}", st.cpu_info.regs.a);
+                        fmt_text_colored!(ui, self.theme.value, "${:02X}", st.cpu_info.regs.a);
                         ui.same_line();
-                        ui.text_colored(label_color, "  X: ");
+                        ui.text_colored(self.theme.label, "  X: ");
                         ui.same_line();
-                        fmt_text!(ui, "${:02X}", st.cpu_info.regs.x);
+                        fmt_text_colored!(ui, self.theme.value, "${:02X}", st.cpu_info.regs.x);
                         ui.same_line();
-                        ui.text_colored(label_color, "  Y: ");
+                        ui.text_colored(self.theme.label, "  Y: ");
                         ui.same_line();
-                        fmt_text!(ui, "${:02X}", st.cpu_info.regs.y);
-                        ui.text_colored(label_color, "FLAGS: ");
+                        fmt_text_colored!(ui, self.theme.value, "${:02X}", st.cpu_info.regs.y);
+                        ui.text_colored(self.theme.label, "FLAGS: ");
                         for i in [
                             Flag6502::C,
                             Flag6502::Z,
@@ -304,18 +401,18 @@ impl AppUI {
                             ui.same_line();
                             let s: &str = i.into();
                             if i.reg_has(st.cpu_info.regs.sr) {
-                                ui.text_colored([0.3, 1.0, 0.3, 1.0], s);
+                                ui.text_colored(self.theme.signal_high, s);
                             } else {
-                                ui.text_colored([1.0, 0.3, 0.3, 1.0], s);
+                                ui.text_colored(self.theme.signal_low, s);
                             }
                         }
                         ui.separator();
-                        ui.text_colored(label_color, "Cycles left: ");
+                        ui.text_colored(self.theme.label, "Cycles left: ");
                         ui.same_line();
-                        fmt_text!(ui, "{}", st.cpu_info.cycles_left);
-                        ui.text_colored(label_color, "Cycle counter: ");
+                        fmt_text_colored!(ui, self.theme.value, "{}", st.cpu_info.cycles_left);
+                        ui.text_colored(self.theme.label, "Cycle counter: ");
                         ui.same_line();
-                        fmt_text!(ui, "{}", st.cpu_info.global);
+                        fmt_text_colored!(ui, self.theme.value, "{}", st.cpu_info.global);
                         f.pop();
                     });
             });
@@ -325,66 +422,22 @@ impl AppUI {
             .size(dims.size_right_middle(), imgui::Condition::Always)
             .flags(panel_flag)
             .build(|| {
-                ui.text("Memory Hex View Placeholder");
+                ui.text_colored(self.theme.value, "Memory Hex View Placeholder");
             });
         ui.window("Disassemble")
             .position(dims.position_right_lower(), imgui::Condition::Always)
             .size(dims.size_right_lower(), imgui::Condition::Always)
             .flags(panel_flag)
             .build(|| {
-                ui.dummy([0.0, dims.size_right_lower()[1] * 0.02]);
-                ui.indent_by(dims.size_right_lower()[0] * 0.025);
-                ui.text_colored(label_color, "DISASSEMBLY");
-                ui.separator();
-                let showing = 100u32;
-                let mut i = 0u32;
-                let mut current_line_count = 0;
-                let mut pc_line_index = 0;
-                ui.child_window("dissasm_scroll")
-                    .size([0.0, 0.0])
-                    .border(false)
-                    .build(|| {
-                        let f = ui.push_font(self.fonts[1]);
-                        ui.indent_by(3.0);
-                        let mut padding_text;
-                        let mut line_color;
-                        while i <= showing {
-                            let addr =
-                                (st.cpu_info.regs.pc + i as u16).wrapping_sub((showing / 2) as u16);
-
-                            if addr == st.cpu_info.regs.pc {
-                                pc_line_index = current_line_count;
-                                padding_text = " > ";
-                                line_color = highlight_color;
-                            } else {
-                                padding_text = "   ";
-                                line_color = value_color;
-                            }
-                            match st.dissasembly.mapping.get(&addr) {
-                                Some((start, end, jump)) => {
-                                    i += *jump as u32;
-                                    ui.text_colored(line_color, padding_text);
-                                    ui.same_line();
-                                    ui.text_colored(line_color, &st.dissasembly.text[*start..*end]);
-                                }
-                                None => {
-                                    i += 1;
-                                    ui.text(padding_text);
-                                    ui.same_line();
-                                    fmt_text_colored!(ui, label_color, "${:04X} <unmapped>", addr);
-                                }
-                            }
-                            current_line_count += 1;
-                        }
-                        if st.dissasembly.new_info {
-                            let line_height = ui.text_line_height_with_spacing();
-                            let target_y = pc_line_index as f32 * line_height;
-                            let center_offset =
-                                target_y - (ui.window_size()[1] / 2.0) + (line_height / 2.0);
-                            ui.set_scroll_y(center_offset);
-                        }
-                        f.pop();
-                    });
+                window_dissasm::update(
+                    ui,
+                    &self.theme,
+                    &self.fonts,
+                    &mut self.options,
+                    &mut self.addr_buffer,
+                    &mut self.text_buffer,
+                    &st,
+                )
             });
 
         let mut d = self.raylib.0.begin_drawing(&self.raylib.1);

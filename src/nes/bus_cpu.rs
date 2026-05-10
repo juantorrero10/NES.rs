@@ -87,7 +87,7 @@ impl BusCpu {
         return Ok(*(self.resolve_addr(addr)?));
     }
 
-    #[cfg(debug_assertions)]
+    // #[cfg(debug_assertions)]
     pub fn debug_load_prg(&mut self, prg: &[u8]) {
         self.cart_prg.extend_from_slice(prg);
     }

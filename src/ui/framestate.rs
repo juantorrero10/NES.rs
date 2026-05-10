@@ -3,12 +3,17 @@ use std::collections::HashMap;
 use crate::nes::cpu::RegFile6502;
 
 pub struct FrameState<'a> {
+    pub screen: GameScreen,
     pub cpu_info: CpuInfo,
     pub dissasembly: Dissassebly<'a>,
 }
 
+pub struct GameScreen {
+    pub update: bool,
+}
+
 pub struct Dissassebly<'a> {
-    pub new_info: bool,
+    pub update: bool,
     pub text: &'a str,
     pub mapping: &'a HashMap<u16, (usize, usize, u16)>,
 }

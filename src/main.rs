@@ -13,7 +13,10 @@ use simple_logger::SimpleLogger;
 
 use crate::{
     nes::{Nes, bus_cpu::BusCpu, instruction_set::Instruction6502},
-    ui::{AppUI, framestate::{Dissassebly, FrameState}},
+    ui::{
+        AppUI, Theme,
+        framestate::{Dissassebly, FrameState, GameScreen},
+    },
 };
 
 mod nes;
@@ -46,7 +49,6 @@ fn get_dissasembly(
     bus: &mut BusCpu,
     hm: &mut HashMap<u16, (usize, usize, u16)>,
     buff: &mut String,
-    dgb_out: bool,
 ) {
     buff.clear();
     hm.clear();
@@ -79,7 +81,7 @@ fn nes_loop(mut nes: Nes, mut ui: AppUI) -> Result<(), Box<dyn Error>> {
     let mut sim = RunMode::CanStep;
     let mut ins_mapping: HashMap<u16, (usize, usize, u16)> = HashMap::with_capacity(65536);
     let mut step = true;
-    let mut a = true;
+    let mut frame_updated = true;
 
     while !ui.raylib_handle().window_should_close() {
         let t0 = Instant::now();
@@ -89,13 +91,13 @@ fn nes_loop(mut nes: Nes, mut ui: AppUI) -> Result<(), Box<dyn Error>> {
         {
             sim = RunMode::WaitRelease;
             step = true;
+            frame_updated = true;
         }
 
         if let RunMode::WaitRelease = sim
             && ui.raylib_handle().is_key_released(KeyboardKey::KEY_S)
         {
             sim = RunMode::CanStep;
-           
         }
 
         if step {
@@ -111,24 +113,36 @@ fn nes_loop(mut nes: Nes, mut ui: AppUI) -> Result<(), Box<dyn Error>> {
                 &mut nes.bus.borrow_mut(),
                 &mut ins_mapping,
                 &mut dissasembly,
-                a,
             );
         }
         let fs = FrameState {
+            screen: GameScreen {
+                update: frame_updated,
+            },
             cpu_info: (&(nes.cpu)).into(),
-            dissasembly: Dissassebly {new_info: step, text: &dissasembly, mapping: &ins_mapping},
+            dissasembly: Dissassebly {
+                update: step,
+                text: &dissasembly,
+                mapping: &ins_mapping,
+            },
         };
         step = false;
-        a = false;
+        frame_updated = false;
         ui.update(fs);
         let dt = t0.elapsed().as_micros();
+        // V-Sync logic
         if dt < FPS60_ELAPSED {
             sleep(Duration::from_micros((FPS60_ELAPSED - dt) as u64));
         }
         title.clear();
+        let version_tag;
+        version_tag = match cfg!(debug_assertions) {
+            true => "Debug",
+            false => "Release",
+        };
         let _ = write!(
             title,
-            "Nes ({:#02})",
+            "ShittyEmu.rs [{version_tag}] (FPS:{:.2})",
             (1000000.0 / (std::cmp::max(dt, FPS60_ELAPSED) as f32))
         );
         ui.raylib_handle()
@@ -159,10 +173,30 @@ fn init() -> Result<(Nes, AppUI), Box<dyn Error>> {
     */
     nes.bus.borrow_mut().debug_load_prg(&[
         0xA2, 0x0A, 0x8E, 0x00, 0x00, 0xA2, 0x03, 0x8E, 0x01, 0x00, 0xAC, 0x00, 0x00, 0xA9, 0x00,
-        0x18, 0x6D, 0x01, 0x00, 0x88, 0xD0, 0xFA, 0x8D, 0x02, 0x00, 0xA2, 0xB4, 0x8E, 0x00, 0x80, 0xEA
+        0x18, 0x6D, 0x01, 0x00, 0x88, 0xD0, 0xFA, 0x8D, 0x02, 0x00, 0xA2, 0xB4, 0x8E, 0x00, 0x80,
+        0xEA,
     ]);
     nes.cpu.reset()?;
-    Ok((nes, AppUI::new()))
+
+    let app_ui =
+        if std::env::args().len() > 1 && std::env::args().skip(1).next().unwrap() == "--light" {
+            AppUI::with_theme(Theme {
+                bg: [0.95, 0.95, 0.9, 1.0],
+                darker_bg: [0.73, 0.73, 0.7, 1.0f32],
+                game_screen_bg: [0.95, 0.95, 0.9, 1.0],
+                label: [0.35, 0.35, 0.35, 1.0],
+                title: [0.25, 0.25, 0.25, 1.0],
+                signal_low: [0.8, 0.17, 0.17, 1.0],
+                signal_high: [0.17, 0.8, 0.17, 1.0],
+                highlight: [0.15, 0.65, 0.67, 0.9],
+                highlight2: [0.98, 0.902, 0.337, 0.9],
+                value: [0.0, 0.0, 0.0, 1.0],
+                button: [0.369, 0.361, 0.431, 1.0],
+            })
+        } else {
+            AppUI::new()
+        };
+    Ok((nes, app_ui))
 }
 
 fn main() {
