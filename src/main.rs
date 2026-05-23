@@ -15,7 +15,7 @@ use crate::{
     nes::{Nes, bus_cpu::BusCpu, instruction_set::Instruction6502},
     ui::{
         AppUI, Theme,
-        framestate::{Dissassebly, FrameState, GameScreen},
+        framestate::{Dissassebly, FrameState, GameScreen, MemEdit, PersistentFrameState},
     },
 };
 
@@ -75,8 +75,16 @@ fn get_dissasembly(
     }
 }
 
+fn save_page(page_num: u8, bus: &mut BusCpu, out_buff: &mut [Option<u8>]) {
+    for j in 0..256 {
+        out_buff[j] = bus.read((page_num as u16) << 8 | j as u16).ok()
+    }
+}
+
 fn nes_loop(mut nes: Nes, mut ui: AppUI) -> Result<(), Box<dyn Error>> {
     let mut dissasembly = String::with_capacity(65536);
+    let mut mem_page = [None; 256];
+    let mut pfs = PersistentFrameState::default();
     let mut title = String::with_capacity(20);
     let mut sim = RunMode::CanStep;
     let mut ins_mapping: HashMap<u16, (usize, usize, u16)> = HashMap::with_capacity(65536);
@@ -114,10 +122,25 @@ fn nes_loop(mut nes: Nes, mut ui: AppUI) -> Result<(), Box<dyn Error>> {
                 &mut ins_mapping,
                 &mut dissasembly,
             );
+            pfs.mem_edit_page_changed = true;
         }
-        let fs = FrameState {
+
+        if pfs.mem_edit_page_changed {
+            save_page(
+                pfs.mem_edit_current_page,
+                &mut nes.bus.borrow_mut(),
+                &mut mem_page,
+            );
+        }
+        let mut fs = FrameState {
             screen: GameScreen {
                 update: frame_updated,
+            },
+            memory_editor: MemEdit {
+                paged_changed: false,
+                current_page: pfs.mem_edit_current_page,
+                search_byte_highlight: pfs.mem_edit_search_byte_highlight,
+                page_data: &mem_page,
             },
             cpu_info: (&(nes.cpu)).into(),
             dissasembly: Dissassebly {
@@ -128,7 +151,9 @@ fn nes_loop(mut nes: Nes, mut ui: AppUI) -> Result<(), Box<dyn Error>> {
         };
         step = false;
         frame_updated = false;
-        ui.update(fs);
+        ui.update(&mut fs);
+
+        pfs = PersistentFrameState::save_persistent_info(fs);
         let dt = t0.elapsed().as_micros();
         // V-Sync logic
         if dt < FPS60_ELAPSED {

@@ -14,15 +14,16 @@ use crate::{nes::cpu::Flag6502, ui::framestate::FrameState};
 
 pub mod framestate;
 mod window_dissasm;
+mod window_memory;
 
 struct Panel {
     pos: [f32; 2],
     size: [f32; 2],
 }
 
-struct PanelProportions {
-    window_w: f32,
-    window_h: f32,
+pub struct PanelProportions {
+    pub window_w: f32,
+    pub window_h: f32,
 
     // They sum 1
     upper_h: f32,
@@ -41,8 +42,8 @@ struct PanelProportions {
 impl PanelProportions {
     fn new(
         window_size: [f32; 2],
-        mut game_win_h: f32,
         mut game_win_w: f32,
+        mut game_win_h: f32,
         mut right_upper_h: f32,
         mut right_middle_h: f32,
     ) -> Self {
@@ -89,7 +90,7 @@ impl PanelProportions {
         return [self.left_w, self.upper_h];
     }
     fn size_lower(&self) -> [f32; 2] {
-        return [self.left_w, self.lower_h];
+        return [self.left_w, self.lower_h + 0.5];
     }
     fn size_right_upper(&self) -> [f32; 2] {
         return [self.right_w, self.right_upper_h];
@@ -154,7 +155,7 @@ impl Default for Theme {
         Self {
             bg: [0.1, 0.12, 0.15, 1.0],
             darker_bg: [0.049, 0.065, 0.092, 1.0f32],
-            game_screen_bg: [0.049, 0.065, 0.092, 1.0f32],
+            game_screen_bg: [0.0, 0.0, 0.0, 1.0f32],
             label: [0.75, 0.8, 0.82, 0.6],
             title: [0.72, 0.8, 0.82, 0.9],
             signal_low: [1.0, 0.3, 0.3, 1.0],
@@ -176,7 +177,8 @@ pub struct AppUI {
     fonts: Fonts,
     options: Options,
     text_buffer: String,
-    addr_buffer: String,
+    addr_disassm_buffer: String,
+    addr_memedit_buffer: String
 }
 
 impl AppUI {
@@ -236,14 +238,14 @@ impl AppUI {
             raylib: RaylibInfo(rl, thread, screen, vec![0u8; 256 * 240 * 4]),
             dev_mode: true,
             text_buffer: String::with_capacity(128),
-            addr_buffer: String::with_capacity(5),
+            addr_disassm_buffer: String::with_capacity(5),
+            addr_memedit_buffer: "0000".to_owned(),
             fonts: [f0, f1, f2],
             theme: t,
         }
     }
 
-
-    pub fn update(&mut self, st: FrameState) {
+    pub fn update(&mut self, st: &mut FrameState) {
         self.text_buffer.clear();
         let buffer = &mut self.text_buffer;
 
@@ -347,8 +349,8 @@ impl AppUI {
         _t.pop();
         ui.window("Console")
             .flags(panel_flag)
-            .position(dims.position_lower(), imgui::Condition::Always)
-            .size(dims.size_lower(), imgui::Condition::Always)
+            .position(dims.position_right_middle(), imgui::Condition::Always)
+            .size(dims.size_right_middle(), imgui::Condition::Always)
             .build(|| {
                 ui.text_colored(self.theme.value, "Console output will go here...");
             });
@@ -357,8 +359,8 @@ impl AppUI {
             .flags(panel_flag)
             .size(dims.size_right_upper(), imgui::Condition::Always)
             .build(|| {
-                ui.dummy([0.0, dims.size_right_upper()[1] * 0.01]);
-                ui.indent_by(dims.size_right_upper()[0] * 0.025);
+                ui.dummy([0.0, dims.window_h * 0.004]);
+                ui.indent_by(dims.window_w * 0.007);
                 ui.text_colored(self.theme.title, "CPU INFO");
                 ui.separator();
                 ui.dummy([0.0, dims.size_right_upper()[1] * 0.01]);
@@ -418,11 +420,20 @@ impl AppUI {
             });
 
         ui.window("Memory")
-            .position(dims.position_right_middle(), imgui::Condition::Always)
-            .size(dims.size_right_middle(), imgui::Condition::Always)
+            .position(dims.position_lower(), imgui::Condition::Always)
+            .size(dims.size_lower(), imgui::Condition::Always)
             .flags(panel_flag)
             .build(|| {
-                ui.text_colored(self.theme.value, "Memory Hex View Placeholder");
+                window_memory::update(
+                    ui,
+                    &dims,
+                    &self.theme,
+                    &self.fonts,
+                    &mut self.options,
+                    &mut self.addr_memedit_buffer,
+                    &mut self.text_buffer,
+                    st,
+                );
             });
         ui.window("Disassemble")
             .position(dims.position_right_lower(), imgui::Condition::Always)
@@ -431,10 +442,11 @@ impl AppUI {
             .build(|| {
                 window_dissasm::update(
                     ui,
+                    &dims,
                     &self.theme,
                     &self.fonts,
                     &mut self.options,
-                    &mut self.addr_buffer,
+                    &mut self.addr_disassm_buffer,
                     &mut self.text_buffer,
                     &st,
                 )

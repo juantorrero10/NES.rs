@@ -1,9 +1,17 @@
 use imgui::StyleColor;
 
-use crate::ui::{Fonts, Options, Theme, framestate::FrameState};
+use crate::ui::{Fonts, Options, PanelProportions, Theme, framestate::FrameState};
 
-pub fn update(ui: &imgui::Ui, theme: &Theme, fonts: &Fonts, options: &mut Options, addr_buffer: &mut String, text_buffer: &mut String, st: &FrameState) {
-    
+pub fn update(
+    ui: &imgui::Ui,
+    dims: &PanelProportions,
+    theme: &Theme,
+    fonts: &Fonts,
+    options: &mut Options,
+    addr_buffer: &mut String,
+    text_buffer: &mut String,
+    st: &FrameState,
+) {
     macro_rules! fmt_text_colored {
             ($ui:expr, $col:expr, $fmt:literal, $($arg:tt)*) => {
                 text_buffer.clear();
@@ -11,18 +19,18 @@ pub fn update(ui: &imgui::Ui, theme: &Theme, fonts: &Fonts, options: &mut Option
                 $ui.text_colored($col, &text_buffer)
             };
     }
-    
-    
-    ui.dummy([0.0, ui.window_size()[1] * 0.02]);
-    ui.indent_by(ui.window_size()[0] * 0.025);
+
+    ui.dummy([0.0, dims.window_h * 0.004]);
+    ui.indent_by(dims.window_w * 0.007);
     ui.text_colored(theme.title, "DISASSEMBLY");
     ui.separator();
-    ui.dummy([0.0, ui.window_size()[1] * 0.01]);
+    ui.dummy([0.0, dims.window_h * 0.01]);
     let c_bg = if !options.disassm_focus_pc {
         theme.button
     } else {
         theme.highlight
     };
+
     ui.set_next_item_width(ui.window_size()[0] * 0.6);
     let _h = ui.push_style_color(StyleColor::FrameBg, theme.darker_bg);
     let _p = ui.push_style_color(StyleColor::TextDisabled, theme.label);
@@ -32,10 +40,7 @@ pub fn update(ui: &imgui::Ui, theme: &Theme, fonts: &Fonts, options: &mut Option
     if ui
         .input_text("##address_input", addr_buffer)
         .hint("Address to jump to (hex4)")
-        .flags(
-            imgui::InputTextFlags::ENTER_RETURNS_TRUE
-                | imgui::InputTextFlags::CHARS_HEXADECIMAL,
-        )
+        .flags(imgui::InputTextFlags::ENTER_RETURNS_TRUE | imgui::InputTextFlags::CHARS_HEXADECIMAL)
         .build()
     {
         match u16::from_str_radix(&addr_buffer, 16) {
@@ -87,28 +92,16 @@ pub fn update(ui: &imgui::Ui, theme: &Theme, fonts: &Fonts, options: &mut Option
             let max_scroll = ui.scroll_max_y();
             if max_scroll != 0.0 {
                 if current_scroll <= 0.0 && options.dissasm_from != 0 {
-                    let diff = std::cmp::min(
-                        options.dissasm_show / 4,
-                        options.dissasm_from,
-                    );
-                    options.dissasm_from =
-                        options.dissasm_from.saturating_sub(diff);
-                    options.dissasm_to =
-                        options.dissasm_to.saturating_sub(diff);
+                    let diff = std::cmp::min(options.dissasm_show / 4, options.dissasm_from);
+                    options.dissasm_from = options.dissasm_from.saturating_sub(diff);
+                    options.dissasm_to = options.dissasm_to.saturating_sub(diff);
                     ui.set_scroll_y(diff as f32 * line_height);
                 }
 
-                if current_scroll >= max_scroll - 1.0
-                    && options.dissasm_to != 0xFFFF
-                {
-                    let diff = std::cmp::min(
-                        options.dissasm_show / 4,
-                        0xFFFF - options.dissasm_to,
-                    );
-                    options.dissasm_from =
-                        options.dissasm_from.saturating_add(diff);
-                    options.dissasm_to =
-                        options.dissasm_to.saturating_add(diff);
+                if current_scroll >= max_scroll - 1.0 && options.dissasm_to != 0xFFFF {
+                    let diff = std::cmp::min(options.dissasm_show / 4, 0xFFFF - options.dissasm_to);
+                    options.dissasm_from = options.dissasm_from.saturating_add(diff);
+                    options.dissasm_to = options.dissasm_to.saturating_add(diff);
 
                     // Move camera up to maintain relative position
                     ui.set_scroll_y(current_scroll - (diff as f32 * line_height));
@@ -116,10 +109,8 @@ pub fn update(ui: &imgui::Ui, theme: &Theme, fonts: &Fonts, options: &mut Option
             }
 
             if options.disassm_focus_pc {
-                options.dissasm_from =
-                    st.cpu_info.regs.pc - (options.dissasm_show / 2) as u16;
-                options.dissasm_to =
-                    st.cpu_info.regs.pc + (options.dissasm_show / 2) as u16;
+                options.dissasm_from = st.cpu_info.regs.pc - (options.dissasm_show / 2) as u16;
+                options.dissasm_to = st.cpu_info.regs.pc + (options.dissasm_show / 2) as u16;
             }
             // Update line height
             let line_height = ui.text_line_height_with_spacing();
@@ -144,7 +135,7 @@ pub fn update(ui: &imgui::Ui, theme: &Theme, fonts: &Fonts, options: &mut Option
                         i += 1;
                         ui.text(padding_text);
                         ui.same_line();
-                        fmt_text_colored!(ui, theme.label, "${:04X} <unmapped>", addr);
+                        fmt_text_colored!(ui, theme.label, "${:04X}:   <unmapped>", addr);
                     }
                 }
                 if addr == 0xFFFF {
@@ -153,16 +144,13 @@ pub fn update(ui: &imgui::Ui, theme: &Theme, fonts: &Fonts, options: &mut Option
                 current_line_count += 1;
             }
             if has_jumped && !options.disassm_focus_pc {
-                let target_y =
-                    (target_addr - options.dissasm_from) as f32 * line_height;
-                let center_offset =
-                    target_y - (ui.window_size()[1] / 2.0) + (line_height / 2.0);
+                let target_y = (target_addr - options.dissasm_from) as f32 * line_height;
+                let center_offset = target_y - (ui.window_size()[1] / 2.0) + (line_height / 2.0);
                 ui.set_scroll_y(center_offset);
             }
             if options.disassm_focus_pc {
                 let target_y = pc_line_index as f32 * line_height;
-                let center_offset =
-                    target_y - (ui.window_size()[1] / 2.0) + (line_height / 2.0);
+                let center_offset = target_y - (ui.window_size()[1] / 2.0) + (line_height / 2.0);
                 ui.set_scroll_y(center_offset);
             }
             f.pop();
