@@ -94,18 +94,30 @@ fn nes_loop(mut nes: Nes, mut ui: AppUI) -> Result<(), Box<dyn Error>> {
     while !ui.raylib_handle().window_should_close() {
         let t0 = Instant::now();
 
-        if let RunMode::CanStep = sim
-            && ui.raylib_handle().is_key_pressed(KeyboardKey::KEY_S)
-        {
-            sim = RunMode::WaitRelease;
-            step = true;
-            frame_updated = true;
-        }
+        match sim {
+            RunMode::Sim => {
+                step = true;
+                frame_updated = true;
 
-        if let RunMode::WaitRelease = sim
-            && ui.raylib_handle().is_key_released(KeyboardKey::KEY_S)
-        {
-            sim = RunMode::CanStep;
+                if ui.raylib_handle().is_key_pressed(KeyboardKey::KEY_SPACE) {
+                    sim = RunMode::CanStep;
+                }
+            }
+            RunMode::CanStep => {
+                if ui.raylib_handle().is_key_pressed(KeyboardKey::KEY_S) {
+                    sim = RunMode::WaitRelease;
+                    step = true;
+                    frame_updated = true;
+                }
+                else if ui.raylib_handle().is_key_pressed(KeyboardKey::KEY_SPACE) {
+                    sim = RunMode::Sim;
+                }
+            }
+            RunMode::WaitRelease => {
+                if ui.raylib_handle().is_key_released(KeyboardKey::KEY_S) {
+                    sim = RunMode::CanStep;
+                }
+            }
         }
 
         if step {
@@ -198,7 +210,7 @@ fn init() -> Result<(Nes, AppUI), Box<dyn Error>> {
     */
     nes.bus.borrow_mut().debug_load_prg(&[
         0xA2, 0x0A, 0x8E, 0x00, 0x00, 0xA2, 0x03, 0x8E, 0x01, 0x00, 0xAC, 0x00, 0x00, 0xA9, 0x00,
-        0x18, 0x6D, 0x01, 0x00, 0x88, 0xD0, 0xFA, 0x8D, 0x02, 0x00, 0xA2, 0xB4, 0x8E, 0x00, 0x80,
+        0x18, 0x6D, 0x01, 0x00, 0x88, 0xD0, 0xFA, 0x8D, 0x02, 0x00, 0xA2, 0x21, 0x8E, 0x00, 0x80,
         0xEA,
     ]);
     nes.cpu.reset()?;
