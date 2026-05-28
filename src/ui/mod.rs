@@ -15,6 +15,7 @@ use crate::{nes::cpu::Flag6502, ui::framestate::FrameState};
 pub mod framestate;
 mod window_dissasm;
 mod window_memory;
+mod window_ppu;
 
 struct Panel {
     pos: [f32; 2],
@@ -106,7 +107,9 @@ impl PanelProportions {
 struct RaylibInfo {
     handle: RaylibHandle,
     thread: RaylibThread,
-    texture: RenderTexture2D,
+    game_texture: RenderTexture2D,
+    chr_bank0: RenderTexture2D,
+    chr_bank1: RenderTexture2D,
 }
 
 impl RaylibInfo {
@@ -114,11 +117,15 @@ impl RaylibInfo {
         handle: RaylibHandle,
         thread: RaylibThread,
         texture: RenderTexture2D, /*, screen_data: Vec<u8>*/
+        c0: RenderTexture2D,
+        c1: RenderTexture2D,
     ) -> Self {
         Self {
             handle,
             thread,
-            texture,
+            game_texture: texture,
+            chr_bank0: c0,
+            chr_bank1: c1,
         }
     }
 }
@@ -248,12 +255,21 @@ impl AppUI {
         let screen = rl
             .load_render_texture(&thread, 256, 240)
             .expect("Couldn't make texture");
+        let c0 = rl
+            .load_render_texture(&thread, 128, 128)
+            .expect("Couldnt make texture");
+        let c1 = rl
+            .load_render_texture(&thread, 128, 128)
+            .expect("Couldnt make texture");
+
         screen.set_texture_filter(&thread, raylib::ffi::TextureFilter::TEXTURE_FILTER_POINT);
+        c0.set_texture_filter(&thread, raylib::ffi::TextureFilter::TEXTURE_FILTER_POINT);
+        c1.set_texture_filter(&thread, raylib::ffi::TextureFilter::TEXTURE_FILTER_POINT);
         Self {
             options: Options::default(),
             ctx,
             renderer,
-            raylib: RaylibInfo::new(rl, thread, screen),
+            raylib: RaylibInfo::new(rl, thread, screen, c0, c1),
             dev_mode: true,
             text_buffer: String::with_capacity(128),
             addr_disassm_buffer: String::with_capacity(5),
@@ -288,7 +304,7 @@ impl AppUI {
         if st.screen.update {
             unsafe {
                 self.raylib
-                    .texture
+                    .game_texture
                     .texture_mut()
                     .update_texture(std::slice::from_raw_parts(
                         st.screen.video_output.0,
@@ -355,7 +371,7 @@ impl AppUI {
                 ui.set_cursor_pos([ui.cursor_pos()[0] + x_offset, ui.cursor_pos()[1] + y_offset]);
 
                 imgui::Image::new(
-                    imgui::TextureId::new(self.raylib.texture.texture().id as usize),
+                    imgui::TextureId::new(self.raylib.game_texture.texture().id as usize),
                     [draw_w, draw_h],
                 )
                 .uv0([0.0, 1.0])
@@ -363,12 +379,22 @@ impl AppUI {
                 .build(ui);
             });
         _t.pop();
-        ui.window("Console")
+        ui.window("ppu stuff")
             .flags(panel_flag)
             .position(dims.position_right_middle(), imgui::Condition::Always)
             .size(dims.size_right_middle(), imgui::Condition::Always)
             .build(|| {
-                ui.text_colored(self.theme.value, "Console output will go here...");
+                window_ppu::update(
+                    ui,
+                    &dims,
+                    &mut self.raylib.chr_bank0,
+                    &mut self.raylib.chr_bank1,
+                    &self.theme,
+                    &self.fonts,
+                    &mut self.options,
+                    buffer,
+                    st,
+                );
             });
         ui.window("CPU")
             .position(dims.position_right_upper(), imgui::Condition::Always)

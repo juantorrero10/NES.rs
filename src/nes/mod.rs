@@ -32,6 +32,8 @@ pub enum NesError {
     NesError(#[from] ROMErr),
     #[error("{0}")]
     CpuError(#[from] CpuError),
+    #[error("Couldn't respond to '{0:?}' event")]
+    UnhandledEvent(NesEvent),
 }
 
 type Result<T> = std::result::Result<T, NesError>;
@@ -46,8 +48,7 @@ impl Nes {
             rom.prg_ram,
         )));
         
-        let ppu = Rc::new(RefCell::new(Ppu::new(
-            bus.clone(), 
+        let ppu = Rc::new(RefCell::new(Ppu::new( 
             rom.ppu_mapper, 
             rom.chr_data, 
             rom.mirror
@@ -60,7 +61,7 @@ impl Nes {
 
         Ok(Nes {
             bus: bus.clone(),
-            ppu, // Safely moved without invalidating references
+            ppu, 
             cpu: Cpu::new(bus.clone()),
             ppu_cpu_clock_frequency: 0,
         })
@@ -78,6 +79,7 @@ impl Nes {
 }
 
 // Communication between components
+#[derive(Debug)]
 enum NesEvent {
     PpuRegWrittenTo(PpuRegister),
     PpuRegReadFrom(PpuRegister),
@@ -88,14 +90,20 @@ struct NesComm {
     // Maybe more in the future
 }
 
-fn trigger_event(comm: &NesComm, e: NesEvent) -> std::result::Result<(), Box<dyn Error>> {
+fn trigger_read_event(comm: &NesComm, e: NesEvent) -> std::result::Result<u8, Box<dyn Error>> {
     match e {
         NesEvent::PpuRegReadFrom(r) => {
-            comm.ppu.borrow_mut().event_cpu_has_read(r)?;
+            Ok(comm.ppu.borrow_mut().event_cpu_has_read(r)?)
         },
-        NesEvent::PpuRegWrittenTo(r) => {
-            comm.ppu.borrow_mut().event_cpu_has_written(r)?;
-        },
+        _ => Err(Box::new(NesError::UnhandledEvent(e)))
     }
-    Ok(())
+}
+
+fn trigger_write_event(comm: &NesComm, e: NesEvent, data: u8) -> std::result::Result<(), Box<dyn Error>> {
+    match e {
+        NesEvent::PpuRegWrittenTo(r) => {
+            Ok(comm.ppu.borrow_mut().event_cpu_has_written(r, data)?)
+        },
+        _ => Err(Box::new(NesError::UnhandledEvent(e)))
+    }
 }

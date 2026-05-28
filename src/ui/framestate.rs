@@ -7,8 +7,15 @@ pub struct FrameState<'a> {
     pub cpu_info: CpuInfo,
     pub dissasembly: Dissassebly<'a>,
     pub memory_editor: MemEdit<'a>,
+    pub ppu_info: PpuInfo<'a>,
 }
 
+pub struct PpuInfo<'a> {
+    pub chr_bank_0: &'a [u8],
+    pub chr_bank_1: &'a [u8],
+    pub palettes: [[[u8; 4]; 4]; 8],
+    pub selected_palette: u16,
+}
 pub struct GameScreen {
     pub update: bool,
     pub video_output: (*const u8, usize),

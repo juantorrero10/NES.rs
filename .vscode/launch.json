@@ -15,7 +15,7 @@
                     "--bin=nes"
                 ]
             },
-            "args": ["nestest.nes"]
+            "args": ["smb.rom"]
         },
         {
             "name": "Debug unit tests in executable 'nes'",
