@@ -83,7 +83,7 @@ impl Instruction6502 {
             }
             REL => {
                 let addr = bus.read(arg_start)? as i8 as i16;
-                let sum = arg_start + 1;
+                let sum = arg_start.wrapping_add(1);
                 let addr: u16 = sum.wrapping_add_signed(addr);
                 write!(out, "${:04X}", addr)?;
                 Ok(())
@@ -139,7 +139,7 @@ impl Instruction6502 {
         let extra = Self::get_size(opcode) - 1;
         for i in 0..2 {
             if i < extra
-                && let Ok(b) = bus.read(ip + 1 + (i as u16))
+                && let Ok(b) = bus.read(ip.wrapping_add(1) + (i as u16))
             {
                 write!(out, " {:02X}", b)?;
             } else {
@@ -148,7 +148,7 @@ impl Instruction6502 {
         }
         write!(out, "   {} ", Self::get_pneumonic(opcode))?;
         Self::fmt_push_args(
-            ip + 1,
+            ip.wrapping_add(1),
             INSTRUCTION_LUT[opcode as usize].addressing_handler,
             bus,
             out,
@@ -560,7 +560,7 @@ pub mod instructions {
     });
 
     handler!(stx, c, {
-        bus!(c).write(c.state.addr_abs, c.registers.x);
+        bus!(c).write(c.state.addr_abs, c.registers.x)?;
         Ok(false)
     });
 
@@ -577,7 +577,7 @@ pub mod instructions {
         c.registers.a = (result & 0x00FF) as u8;
         Ok(false)
     });
-    
+
     handler!(and, c, {
         let mem = bus!(c).read(c.state.addr_abs)?;
         c.registers.a &= mem;
@@ -931,7 +931,7 @@ pub mod instructions {
         let borrow = (!c.get_flag(Flag6502::C));
         let mut result: u16 =
             (c.registers.a.wrapping_sub(mem) as u16).wrapping_sub(borrow as u16) as u16;
-        
+
         // Set if no underflow ocurred
         c.set_flag(Flag6502::C, result < 0x100);
         c.set_flag(Flag6502::Z, result == 0);
@@ -940,7 +940,7 @@ pub mod instructions {
             ((result ^ c.registers.a as u16) & (result ^ !mem as u16) & 0x80) != 0,
         );
         let result = (result & 0x00FF) as u8;
-        c.set_flag(Flag6502::N, (result & 0x80) != 0 );
+        c.set_flag(Flag6502::N, (result & 0x80) != 0);
 
         c.registers.a = result;
         Ok(true)
@@ -961,14 +961,13 @@ pub mod instructions {
         Ok(false)
     });
 
-
     handler!(sta, c, {
-        bus!(c).write(c.state.addr_abs, c.registers.a);
+        bus!(c).write(c.state.addr_abs, c.registers.a)?;
         Ok(false)
     });
 
     handler!(sty, c, {
-        bus!(c).write(c.state.addr_abs, c.registers.y);
+        bus!(c).write(c.state.addr_abs, c.registers.y)?;
         Ok(false)
     });
 

@@ -1,9 +1,5 @@
 use std::{
-    collections::HashMap,
-    error::Error,
-    fmt::Write,
-    thread::sleep,
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    collections::HashMap, error::Error, thread::sleep, time::{Duration, Instant}, fmt::Write
 };
 
 use colored::Colorize;
@@ -22,20 +18,8 @@ use crate::{
 mod nes;
 mod ui;
 
-fn dump_and_abort(nes: Nes, e: Box<dyn Error>) -> Box<dyn Error> {
-    log::warn!("Failure while clocking CPU, shuting down!");
-    println!(
-        "{}:\n{:?}",
-        ">>>CPU state dump on failure<<<".bright_black(),
-        nes.cpu
-    );
-    println!(
-        "{}:\n{:?}",
-        ">>>BUS state dump on failure<<<".bright_black(),
-        nes.bus
-    );
-    return e;
-}
+
+
 
 const FPS60_ELAPSED: u128 = 16667;
 
@@ -52,8 +36,8 @@ fn get_dissasembly(
 ) {
     buff.clear();
     hm.clear();
-    let mut old_len = 0usize;
-    let mut new_len = 0usize;
+    let mut old_len;
+    let mut new_len;
     let mut jump: u16;
     let mut i = 0u32;
     while i <= 0xFFFF {
@@ -64,7 +48,7 @@ fn get_dissasembly(
                 i += v as u32;
                 jump = v as u16;
             }
-            Err(e) => {
+            Err(_) => {
                 buff.truncate(old_len);
                 i += 1;
                 continue;
@@ -123,7 +107,7 @@ fn nes_loop(mut nes: Nes, mut ui: AppUI) -> Result<(), Box<dyn Error>> {
         if step {
             loop {
                 if let Err(e) = nes.cpu.clock() {
-                    return Err(dump_and_abort(nes, Box::new(e)));
+                    return Err(Box::new(e));
                 };
                 if nes.cpu.state.cycles_left == 0 {
                     break;
@@ -189,7 +173,15 @@ fn nes_loop(mut nes: Nes, mut ui: AppUI) -> Result<(), Box<dyn Error>> {
 }
 
 fn init() -> Result<(Nes, AppUI), Box<dyn Error>> {
-    let mut nes = Nes::new();
+    let mut args = std::env::args();
+    let bin = args.next().unwrap();
+    let rom_path =match args.next() {
+        Some(f) => {f},
+        _ => { 
+            panic!("Usage: {bin} <ROM path>"); 
+        }
+    };
+    let mut nes = Nes::new(&rom_path)?;
     /*
         *=$8000
         LDX #10
@@ -208,11 +200,7 @@ fn init() -> Result<(Nes, AppUI), Box<dyn Error>> {
         NOP
         NOP
     */
-    nes.bus.borrow_mut().debug_load_prg(&[
-        0xA2, 0x0A, 0x8E, 0x00, 0x00, 0xA2, 0x03, 0x8E, 0x01, 0x00, 0xAC, 0x00, 0x00, 0xA9, 0x00,
-        0x18, 0x6D, 0x01, 0x00, 0x88, 0xD0, 0xFA, 0x8D, 0x02, 0x00, 0xA2, 0x21, 0x8E, 0x00, 0x80,
-        0xEA,
-    ]);
+
     nes.cpu.reset()?;
 
     let app_ui =

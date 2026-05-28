@@ -13,6 +13,8 @@ const STACK_TOP: u16 = 0x0100;
 const STACK_BOTTOM: u16 = 0x01FF;
 
 const RESET_VEC: u16 = 0xFFFC;
+const IRQ_VEC: u16 = 0xFFFE;
+const NMI_VEC: u16 = 0xFFFA;
 
 #[derive(Clone, Copy)]
 pub struct RegFile6502 {
@@ -106,6 +108,8 @@ pub enum CpuError {
     InstError(String),
 }
 
+type Result<T> = std::result::Result<T, CpuError>;
+
 #[macro_export]
 macro_rules! bus {
     ($self:expr) => {
@@ -137,7 +141,7 @@ impl Cpu {
     }
 
     #[inline(always)]
-    pub fn fetch(&mut self) -> Result<u8, CpuError> {
+    pub fn fetch(&mut self) -> Result<u8> {
         if INSTRUCTION_LUT[self.state.last_opcode as usize].addressing_handler
             != addressing::AddrMode::IMP
         {
@@ -146,7 +150,7 @@ impl Cpu {
         return Ok(self.state.fetched);
     }
 
-    pub fn reset(&mut self) -> Result<(), BusCpuError> {
+    pub fn reset(&mut self) -> Result<()> {
         self.registers = RegFile6502::default();
         self.registers.pc = bus!(self).read16(RESET_VEC)?;
 
@@ -156,19 +160,19 @@ impl Cpu {
     }
 
     #[inline(always)]
-    pub fn push(&mut self, data: u8) -> Result<(), CpuError> {
+    pub fn push(&mut self, data: u8) -> Result<()> {
         bus!(self).write(STACK_BOTTOM + self.registers.sp as u16, data)?;
         self.registers.sp -= 1;
         Ok(())
     }
 
     #[inline(always)]
-    pub fn pull(&mut self) -> Result<u8, CpuError> {
+    pub fn pull(&mut self) -> Result<u8> {
         self.registers.sp += 1;
         Ok(bus!(self).read(STACK_BOTTOM + self.registers.sp as u16)?)
     }
 
-    pub fn clock(&mut self) -> Result<(), CpuError> {
+    pub fn clock(&mut self) -> Result<()> {
         if self.state.cycles_left != 0 {
             self.state.cycles_left -= 1;
             self.state.clock_counter += 1;
@@ -206,6 +210,40 @@ impl Cpu {
 
         self.state.cycles_left -= 1;
         self.state.clock_counter += 1;
+        Ok(())
+    }
+
+    // -- Interrupt logic --
+    #[inline]
+    fn interrupt_save_state(&mut self) -> Result<()> {
+        self.push((self.registers.pc >> 8) as u8)?;
+        self.push((self.registers.pc & 0x00FF) as u8)?;
+
+        self.set_flag(Flag6502::I, true);
+        
+        let pushed_sr = self.registers.sr | Flag6502::U as u8 & !(Flag6502::B as u8);
+        self.push(pushed_sr)?;
+
+        Ok(())
+    }
+
+    #[inline(always)]
+    pub fn irq(&mut self) -> Result<()> {
+        // If they are disabled (I: Interrupt enable [Set low]).
+        if self.get_flag(Flag6502::I) {
+            return Ok(());
+        }
+        self.interrupt_save_state()?;
+        let addr = bus!(self).read16(IRQ_VEC)?;
+        self.registers.pc = addr;
+        Ok(())
+    }
+
+    #[inline(always)]
+    pub fn nmi(&mut self) -> Result<()> {
+        self.interrupt_save_state()?;
+        let addr = bus!(self).read16(NMI_VEC)?;
+        self.registers.pc = addr;
         Ok(())
     }
 }
