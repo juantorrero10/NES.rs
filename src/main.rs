@@ -24,8 +24,7 @@ mod ui;
 const FPS60_ELAPSED: u128 = 16667;
 
 enum RunMode {
-    WaitRelease,
-    CanStep,
+    Stopped,
     Sim,
 }
 
@@ -70,41 +69,59 @@ fn nes_loop(mut nes: Nes, mut ui: AppUI) -> Result<(), Box<dyn Error>> {
     let mut mem_page = [None; 256];
     let mut pfs = PersistentFrameState::default();
     let mut title = String::with_capacity(20);
-    let mut sim = RunMode::CanStep;
+    let mut sim = RunMode::Stopped;
     let mut ins_mapping: HashMap<u16, (usize, usize, u16)> = HashMap::with_capacity(65536);
-    let mut step = true;
+
+    let mut step_instruction = true;
     let mut frame_updated = true;
+    let mut step_frame = false;
 
     while !ui.raylib_handle().window_should_close() {
         let t0 = Instant::now();
 
         match sim {
             RunMode::Sim => {
-                step = true;
+                step_instruction = true;
                 frame_updated = true;
 
                 if ui.raylib_handle().is_key_pressed(KeyboardKey::KEY_SPACE) {
-                    sim = RunMode::CanStep;
+                    sim = RunMode::Stopped;
                 }
             }
-            RunMode::CanStep => {
+            RunMode::Stopped => {
                 if ui.raylib_handle().is_key_pressed(KeyboardKey::KEY_S) {
-                    sim = RunMode::WaitRelease;
-                    step = true;
+                    step_instruction = true;
+                    frame_updated = true;
+                }
+
+                if ui.raylib_handle().is_key_pressed(KeyboardKey::KEY_V) {
+                    step_frame = true;
                     frame_updated = true;
                 }
                 else if ui.raylib_handle().is_key_pressed(KeyboardKey::KEY_SPACE) {
                     sim = RunMode::Sim;
                 }
             }
-            RunMode::WaitRelease => {
-                if ui.raylib_handle().is_key_released(KeyboardKey::KEY_S) {
-                    sim = RunMode::CanStep;
-                }
-            }
         }
 
-        if step {
+        if step_frame {
+            loop {
+                nes.clock()?;
+                if nes.ppu.borrow().frame_complete { break; }
+                // Burn remaining cpu cycles
+                while nes.cpu.state.cycles_left != 0 {
+                    nes.cpu.clock()?;
+                }
+            }
+            get_dissasembly(
+                &mut nes.bus.borrow_mut(),
+                &mut ins_mapping,
+                &mut dissasembly,
+            );
+            pfs.mem_edit_page_changed = true;
+        }
+
+        else if step_instruction {
             loop {
                 if let Err(e) = nes.cpu.clock() {
                     return Err(Box::new(e));
@@ -128,9 +145,14 @@ fn nes_loop(mut nes: Nes, mut ui: AppUI) -> Result<(), Box<dyn Error>> {
                 &mut mem_page,
             );
         }
+        let (screen_ptr, screen_size) = { 
+            nes.ppu.borrow().get_screen_ptr() 
+        };
+
         let mut fs = FrameState {
             screen: GameScreen {
                 update: frame_updated,
+                video_output: (screen_ptr, screen_size)
             },
             memory_editor: MemEdit {
                 paged_changed: false,
@@ -140,14 +162,16 @@ fn nes_loop(mut nes: Nes, mut ui: AppUI) -> Result<(), Box<dyn Error>> {
             },
             cpu_info: (&(nes.cpu)).into(),
             dissasembly: Dissassebly {
-                update: step,
+                update: step_instruction,
                 text: &dissasembly,
                 mapping: &ins_mapping,
             },
         };
-        step = false;
-        frame_updated = false;
         ui.update(&mut fs);
+
+        step_frame = false;
+        step_instruction = false;
+        frame_updated = false;
 
         pfs = PersistentFrameState::save_persistent_info(fs);
         let dt = t0.elapsed().as_micros();

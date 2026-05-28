@@ -72,59 +72,59 @@ impl Instruction6502 {
     ) -> Result<()> {
         match a {
             IMM => {
-                let imm = bus.read(arg_start)?;
+                let imm = bus.debug_read(arg_start)?;
                 write!(out, "#{}", imm)?;
                 Ok(())
             }
             ABS => {
-                let addr = bus.read16(arg_start)?;
+                let addr = bus.debug_read16(arg_start)?;
                 write!(out, "${:04X}", addr)?;
                 Ok(())
             }
             REL => {
-                let addr = bus.read(arg_start)? as i8 as i16;
+                let addr = bus.debug_read(arg_start)? as i8 as i16;
                 let sum = arg_start.wrapping_add(1);
                 let addr: u16 = sum.wrapping_add_signed(addr);
                 write!(out, "${:04X}", addr)?;
                 Ok(())
             }
             ABX => {
-                let addr = bus.read16(arg_start)?;
+                let addr = bus.debug_read16(arg_start)?;
                 write!(out, "${:04X}, X", addr)?;
                 Ok(())
             }
             ABY => {
-                let addr = bus.read16(arg_start)?;
+                let addr = bus.debug_read16(arg_start)?;
                 write!(out, "${:04X}, Y", addr)?;
                 Ok(())
             }
             ZP0 => {
-                let addr = bus.read(arg_start)? as u16;
+                let addr = bus.debug_read(arg_start)? as u16;
                 write!(out, "${:04X}", addr)?;
                 Ok(())
             }
             ZPX => {
-                let addr = bus.read(arg_start)? as u16;
+                let addr = bus.debug_read(arg_start)? as u16;
                 write!(out, "${:04X}, X", addr)?;
                 Ok(())
             }
             ZPY => {
-                let addr = bus.read(arg_start)? as u16;
+                let addr = bus.debug_read(arg_start)? as u16;
                 write!(out, "${:04X}, Y", addr)?;
                 Ok(())
             }
             IND => {
-                let addr = bus.read16(arg_start)?;
+                let addr = bus.debug_read16(arg_start)?;
                 write!(out, "(${:04X})", addr)?;
                 Ok(())
             }
             IZX => {
-                let addr = bus.read(arg_start)? as u16;
+                let addr = bus.debug_read(arg_start)? as u16;
                 write!(out, "(${:04X}, X)", addr)?;
                 Ok(())
             }
             IZY => {
-                let addr = bus.read(arg_start)? as u16;
+                let addr = bus.debug_read(arg_start)? as u16;
                 write!(out, "(${:04X}), Y", addr)?;
                 Ok(())
             }
@@ -134,12 +134,12 @@ impl Instruction6502 {
 
     pub fn dissasemble(ip: u16, bus: &mut BusCpu, out: &mut String) -> Result<usize> {
         write!(out, "${:04X}:   ", ip)?;
-        let opcode = bus.read(ip)?;
+        let opcode = bus.debug_read(ip)?;
         write!(out, "{:02X}", opcode)?;
         let extra = Self::get_size(opcode) - 1;
         for i in 0..2 {
             if i < extra
-                && let Ok(b) = bus.read(ip.wrapping_add(1) + (i as u16))
+                && let Ok(b) = bus.debug_read(ip.wrapping_add(1) + (i as u16))
             {
                 write!(out, " {:02X}", b)?;
             } else {

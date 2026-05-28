@@ -96,7 +96,7 @@ pub struct State6502 {
 
 pub struct Cpu {
     pub registers: RegFile6502,
-    pub bus: Rc<RefCell<BusCpu>>,
+    pub bus_cpu: Rc<RefCell<BusCpu>>,
     pub state: State6502,
 }
 
@@ -113,7 +113,7 @@ type Result<T> = std::result::Result<T, CpuError>;
 #[macro_export]
 macro_rules! bus {
     ($self:expr) => {
-        $self.bus.borrow_mut()
+        $self.bus_cpu.borrow_mut()
     };
 }
 
@@ -121,7 +121,7 @@ impl Cpu {
     pub fn new(bus: Rc<RefCell<BusCpu>>) -> Self {
         Cpu {
             registers: RegFile6502::default(),
-            bus,
+            bus_cpu: bus,
             state: State6502::default(),
         }
     }

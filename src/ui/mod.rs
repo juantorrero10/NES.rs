@@ -1,4 +1,3 @@
-
 use std::fmt::Write;
 
 use imgui::{FontId, StyleColor, StyleVar, WindowFlags, sys::ImGuiCond_FirstUseEver};
@@ -104,7 +103,25 @@ impl PanelProportions {
     }
 }
 
-pub struct RaylibInfo(RaylibHandle, RaylibThread, RenderTexture2D, Vec<u8>);
+struct RaylibInfo {
+    handle: RaylibHandle,
+    thread: RaylibThread,
+    texture: RenderTexture2D,
+}
+
+impl RaylibInfo {
+    fn new(
+        handle: RaylibHandle,
+        thread: RaylibThread,
+        texture: RenderTexture2D, /*, screen_data: Vec<u8>*/
+    ) -> Self {
+        Self {
+            handle,
+            thread,
+            texture,
+        }
+    }
+}
 
 pub struct Options {
     disassm_focus_pc: bool,
@@ -179,7 +196,7 @@ pub struct AppUI {
     options: Options,
     text_buffer: String,
     addr_disassm_buffer: String,
-    addr_memedit_buffer: String
+    addr_memedit_buffer: String,
 }
 
 impl AppUI {
@@ -236,7 +253,7 @@ impl AppUI {
             options: Options::default(),
             ctx,
             renderer,
-            raylib: RaylibInfo(rl, thread, screen, vec![0u8; 256 * 240 * 4]),
+            raylib: RaylibInfo::new(rl, thread, screen),
             dev_mode: true,
             text_buffer: String::with_capacity(128),
             addr_disassm_buffer: String::with_capacity(5),
@@ -266,29 +283,27 @@ impl AppUI {
             };
         }
 
-        self.renderer.update(&mut self.ctx, &mut self.raylib.0);
+        self.renderer.update(&mut self.ctx, &mut self.raylib.handle);
 
         if st.screen.update {
-            for i in (0..self.raylib.3.len()).step_by(4) {
-                let lum = rand::random::<u8>();
-                self.raylib.3[i] = lum; // R
-                self.raylib.3[i + 1] = lum; // G
-                self.raylib.3[i + 2] = lum; // B
-                self.raylib.3[i + 3] = 255; // A
+            unsafe {
+                self.raylib
+                    .texture
+                    .texture_mut()
+                    .update_texture(std::slice::from_raw_parts(
+                        st.screen.video_output.0,
+                        st.screen.video_output.1,
+                    ))
+                    .expect("Couldnt swap buffer");
             }
-            self.raylib
-                .2
-                .texture_mut()
-                .update_texture(&self.raylib.3)
-                .expect("Couldnt swap buffer");
         }
 
         let ui = self.ctx.new_frame();
 
         ui.dockspace_over_main_viewport();
         let window = [
-            self.raylib.0.get_screen_width() as f32,
-            self.raylib.0.get_screen_height() as f32,
+            self.raylib.handle.get_screen_width() as f32,
+            self.raylib.handle.get_screen_height() as f32,
         ]; // Get the window size;
         let dims;
         if self.dev_mode {
@@ -299,7 +314,7 @@ impl AppUI {
 
         if self
             .raylib
-            .0
+            .handle
             .is_key_pressed(raylib::ffi::KeyboardKey::KEY_F)
             && !ui.io().want_capture_keyboard
         {
@@ -340,7 +355,7 @@ impl AppUI {
                 ui.set_cursor_pos([ui.cursor_pos()[0] + x_offset, ui.cursor_pos()[1] + y_offset]);
 
                 imgui::Image::new(
-                    imgui::TextureId::new(self.raylib.2.texture().id as usize),
+                    imgui::TextureId::new(self.raylib.texture.texture().id as usize),
                     [draw_w, draw_h],
                 )
                 .uv0([0.0, 1.0])
@@ -453,7 +468,7 @@ impl AppUI {
                 )
             });
 
-        let mut d = self.raylib.0.begin_drawing(&self.raylib.1);
+        let mut d = self.raylib.handle.begin_drawing(&self.raylib.thread);
         d.clear_background(raylib::prelude::Color::DARKGRAY);
         self.renderer.render(&mut self.ctx, &mut d);
     }
@@ -462,9 +477,9 @@ impl AppUI {
         return &self.raylib;
     }
     pub fn raylib_handle(&self) -> &RaylibHandle {
-        return &self.raylib.0;
+        return &self.raylib.handle;
     }
     pub fn raylib_thread(&self) -> &RaylibThread {
-        return &self.raylib.1;
+        return &self.raylib.thread;
     }
 }

@@ -11,6 +11,7 @@ pub struct FrameState<'a> {
 
 pub struct GameScreen {
     pub update: bool,
+    pub video_output: (*const u8, usize),
 }
 
 pub struct Dissassebly<'a> {

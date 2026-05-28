@@ -1,8 +1,8 @@
+use std::{error::Error, mem};
+
 use thiserror::Error;
 
-use crate::nes::{
-    mapper::CpuMapper,
-};
+use crate::nes::{NesComm, NesEvent, mapper::CpuMapper, ppu::PpuRegister, trigger_event};
 
 // RAM Constants
 const ADDR_RAM_START: u16 = 0x0000;
@@ -26,13 +26,18 @@ const ADDR_ROM_END: u16 = 0xFFFF;
 #[derive(Error, Debug)]
 pub enum BusCpuError {
     #[error("Tried to access unmirrored address inside region: ${0:04X}")]
-    AddrError(u16),
+    AddrUnMirrored(u16),
     #[error("Tried to access unimplemented memory range: ${0:04X} ")]
     AddrRangeNotImplemented(u16),
+    #[error("{0}")]
+    UnknownError(#[from] Box<dyn Error>),
+    #[error("The Bus of the CPU couldn't talk to other components as they are not registered.")]
+    CommunicationsNotConnected
 }
 
 pub struct BusCpu {
     ram: [u8; SIZE_RAM],
+
     ppu_reg: [u8; SIZE_PPU_REG],
     // TODO : better name
     ppu_additional_reg: u8,
@@ -42,6 +47,7 @@ pub struct BusCpu {
     fake_value: u8,
 
     mapper: Box<dyn CpuMapper>,
+    communications: Option<NesComm>,
 }
 
 type Result<T> = std::result::Result<T, BusCpuError>;
@@ -57,11 +63,16 @@ impl BusCpu {
             mapper,
             prg_data,
             prg_ram,
+            communications: None,
             fake_value: 0,
         }
     }
 
-    fn resolve_addr(&mut self, mut addr: u16) -> Result<&mut u8> {
+    pub fn add_communications(&mut self, comm: NesComm) {
+        self.communications = Some(comm);
+    }
+
+    fn resolve_addr(&mut self, mut addr: u16, write: bool, trigger_events: bool) -> Result<&mut u8> {
         let input_addr = addr;
         // Map address
         addr = self.mapper.cpu_map_addr(addr);
@@ -72,21 +83,34 @@ impl BusCpu {
                 return self
                     .ram
                     .get_mut(addr as usize)
-                    .ok_or(BusCpuError::AddrError(input_addr));
+                    .ok_or(BusCpuError::AddrUnMirrored(input_addr));
             }
             ADDR_PPU_REG_START..=ADDR_PPU_REG_END => {
                 addr &= SIZE_PPU_REG as u16 - 1;
+                if trigger_events {
+                    let comm = self.communications.as_ref().ok_or(BusCpuError::CommunicationsNotConnected)?;
+                    match write {
+                        true => trigger_event(
+                            comm,
+                            NesEvent::PpuRegWrittenTo(PpuRegister::from_0_to_7(addr)),
+                        )?,
+                        false => trigger_event(
+                            comm,
+                            NesEvent::PpuRegReadFrom(PpuRegister::from_0_to_7(addr)),
+                        )?,
+                    };
+                }
                 return self
                     .ppu_reg
                     .get_mut(addr as usize)
-                    .ok_or(BusCpuError::AddrError(input_addr));
+                    .ok_or(BusCpuError::AddrUnMirrored(input_addr));
             }
             ADDR_ROM_START..=ADDR_ROM_END => {
                 addr &= !(1 << 15);
                 return self
                     .prg_data
                     .get_mut(addr as usize)
-                    .ok_or(BusCpuError::AddrError(input_addr));
+                    .ok_or(BusCpuError::AddrUnMirrored(input_addr));
             }
             _ => Err(BusCpuError::AddrRangeNotImplemented(input_addr)),
         }
@@ -94,7 +118,7 @@ impl BusCpu {
 
     #[inline(always)]
     pub fn read(&mut self, addr: u16) -> Result<u8> {
-        return Ok(*(self.resolve_addr(addr)?));
+        return Ok(*(self.resolve_addr(addr, false, true)?));
     }
 
     /// Read 16bit number (little endian, LSB first)
@@ -105,7 +129,17 @@ impl BusCpu {
 
     #[inline(always)]
     pub fn write(&mut self, addr: u16, data: u8) -> Result<()> {
-        *(self.resolve_addr(addr)?) = data;
+        *(self.resolve_addr(addr, true, true)?) = data;
         Ok(())
+    }
+
+    #[inline(always)]
+    pub fn debug_read(&mut self, addr: u16) -> Result<u8> {
+        return Ok(*(self.resolve_addr(addr, false, false)?));
+    }
+
+    #[inline(always)]
+    pub fn debug_read16(&mut self, addr: u16) -> Result<u16> {
+        Ok((self.debug_read(addr)? as u16) | (self.debug_read(addr + 1)? as u16) << 8)
     }
 }
