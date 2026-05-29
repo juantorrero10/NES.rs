@@ -312,9 +312,9 @@ impl Ppu {
             // Name table read
             1 => {
                 let nt_addr = 0x2000
-                    | (self.vram.addr & VRAM_COARSE_X_MASK
+                    | (self.vram.addr & (VRAM_COARSE_X_MASK
                         | VRAM_COARSE_Y_MASK
-                        | VRAM_NAMETABLE_MASK);
+                        | VRAM_NAMETABLE_MASK));
                 self.bg_regs.latch_name = self.bus_ppu.read(nt_addr)
             }
             2 => {}

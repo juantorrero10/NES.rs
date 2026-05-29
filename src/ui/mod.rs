@@ -374,8 +374,6 @@ impl AppUI {
                     imgui::TextureId::new(self.raylib.game_texture.texture().id as usize),
                     [draw_w, draw_h],
                 )
-                .uv0([0.0, 1.0])
-                .uv1([1.0, 0.0])
                 .build(ui);
             });
         _t.pop();
