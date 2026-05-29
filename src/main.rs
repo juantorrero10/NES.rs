@@ -33,6 +33,7 @@ fn get_dissasembly(
     bus: &mut BusCpu,
     hm: &mut HashMap<u16, (usize, usize, u16)>,
     buff: &mut String,
+    force_syncronize: Option<u16>,
 ) {
     buff.clear();
     hm.clear();
@@ -45,8 +46,16 @@ fn get_dissasembly(
         old_len = buff.len();
         match Instruction6502::dissasemble(addr, bus, buff) {
             Ok(v) => {
-                i += v as u32;
                 jump = v as u16;
+                if let Some(a) = force_syncronize {
+                    if addr < a && addr + v as u16 > a {
+                        i = a as u32;
+                        new_len = buff.len();
+                        hm.insert(addr as u16, (old_len, new_len, (a - addr)));
+                        continue;
+                    }
+                }
+                i += v as u32;
             }
             Err(_) => {
                 buff.truncate(old_len);
@@ -73,7 +82,7 @@ fn get_ppu_info(
     out_pal: &mut [[[u8; 4]; 4]; 8],
 ) {
     let mut ppu = nes.ppu.borrow_mut();
-    ppu.debug_extract_sprite_canvas(0, selected_palette, Some([0x21, 0x22, 0x16, 0x7]), out_chr0);
+    ppu.debug_extract_sprite_canvas(0, selected_palette, None, out_chr0);
     ppu.debug_extract_sprite_canvas(1, selected_palette, None, out_chr1);
     ppu.debug_extract_palettes(&mut *out_pal);
 }
@@ -84,7 +93,10 @@ fn nes_loop(mut nes: Nes, mut ui: AppUI) -> Result<(), Box<dyn Error>> {
     let mut pfs = PersistentFrameState::default();
     let mut title = String::with_capacity(20);
     let mut sim = RunMode::Stopped;
+
+    // Dissasembly
     let mut ins_mapping: HashMap<u16, (usize, usize, u16)> = HashMap::with_capacity(65536);
+    let mut bkpt: Option<u16> = None;
 
     // PPU info upload data
     let mut chr_bank_0_canvas = [0u8; 128 * 128 * 4];
@@ -92,6 +104,10 @@ fn nes_loop(mut nes: Nes, mut ui: AppUI) -> Result<(), Box<dyn Error>> {
     let mut selected_palette = 0;
     let mut palettes = [[[0u8; 4]; 4]; 8];
     let mut fps10_draw_ctrl = 0;
+
+    // log
+    let mut log = false;
+    let mut log_string = String::with_capacity(128);
 
     let mut step_instruction = true;
     let mut frame_updated = true;
@@ -106,7 +122,6 @@ fn nes_loop(mut nes: Nes, mut ui: AppUI) -> Result<(), Box<dyn Error>> {
         match sim {
             RunMode::Sim => {
                 step_frame = true;
-                frame_updated = true;
 
                 if ui.raylib_handle().is_key_pressed(KeyboardKey::KEY_SPACE) {
                     sim = RunMode::Stopped;
@@ -114,59 +129,72 @@ fn nes_loop(mut nes: Nes, mut ui: AppUI) -> Result<(), Box<dyn Error>> {
             }
             RunMode::Stopped => {
                 if ui.raylib_handle().is_key_pressed(KeyboardKey::KEY_S) {
+                    //log::info!("Pressed S!");
                     step_instruction = true;
-                    frame_updated = true;
                 }
 
                 if ui.raylib_handle().is_key_pressed(KeyboardKey::KEY_V) {
                     step_frame = true;
-                    frame_updated = true;
                 } else if ui.raylib_handle().is_key_pressed(KeyboardKey::KEY_SPACE) {
                     sim = RunMode::Sim;
                 }
             }
         }
 
+        if ui.raylib_handle().is_key_pressed(KeyboardKey::KEY_L) {
+            log ^= true;
+        }
+        
+        if ui.raylib_handle().is_key_pressed(KeyboardKey::KEY_R) {
+            nes.reset()?;
+        }
+
+        // Pressing V to jump a frame or Simulation Speed
         if step_frame {
             loop {
-                nes.clock()?;
+                if log {
+                    nes.clock(Some(&mut log_string))?;
+                } else {
+                    nes.clock(None)?;
+                }
+                if let Some(a) = bkpt
+                    && a == nes.cpu.get_pc()
+                {
+                    sim = RunMode::Stopped;
+                    break;
+                }
                 if nes.ppu.borrow().frame_complete {
                     break;
                 }
                 // Burn remaining cpu cycles
                 while nes.cpu.state.cycles_left != 0 {
-                    nes.cpu.clock()?;
+                    nes.cpu.clock(None)?;
                 }
             }
-            get_dissasembly(
-                &mut nes.bus.borrow_mut(),
-                &mut ins_mapping,
-                &mut dissasembly,
-            );
+            frame_updated = true;
             pfs.mem_edit_page_changed = true;
+            // Stepping just one by pressing S
         } else if step_instruction {
+            let mut started_next = nes.cpu.state.cycles_left > 0;
             loop {
-                nes.cpu.clock()?;
-                nes.ppu.borrow_mut().clock();
-                nes.ppu.borrow_mut().clock();
-                nes.ppu.borrow_mut().clock();
-                if nes.cpu.state.cycles_left == 0 {
+                //log::info!("a CL{}", nes.cpu.state.cycles_left);
+                if log {
+                    nes.clock(Some(&mut log_string))?;
+                } else {
+                    nes.clock(None)?;
+                }
+
+                if !started_next && nes.cpu.state.cycles_left > 0 {
+                    started_next = true;
+                }
+
+                if started_next && nes.cpu.state.cycles_left == 0 {
                     break;
                 }
             }
-            get_dissasembly(
-                &mut nes.bus.borrow_mut(),
-                &mut ins_mapping,
-                &mut dissasembly,
-            );
             pfs.mem_edit_page_changed = true;
-            get_ppu_info(
-                    &mut nes,
-                    selected_palette,
-                    &mut chr_bank_0_canvas,
-                    &mut chr_bank_1_canvas,
-                    &mut palettes,
-            );
+            frame_updated = true;
+            fps10_draw_ctrl = 6;
         }
 
         if pfs.mem_edit_page_changed {
@@ -177,9 +205,16 @@ fn nes_loop(mut nes: Nes, mut ui: AppUI) -> Result<(), Box<dyn Error>> {
             );
         }
 
+        if log && !log_string.is_empty(){
+            print!("{}\n", log_string);
+            log_string.clear();
+        }
+
         if ui.raylib_handle().is_key_pressed(KeyboardKey::KEY_P) {
             selected_palette += 1;
             selected_palette &= 0x3;
+            frame_updated = true;
+            fps10_draw_ctrl = 6;
         }
 
         if frame_updated {
@@ -194,6 +229,12 @@ fn nes_loop(mut nes: Nes, mut ui: AppUI) -> Result<(), Box<dyn Error>> {
                 fps10_draw_ctrl = 0;
             }
             fps10_draw_ctrl += 1;
+            get_dissasembly(
+                &mut nes.bus.borrow_mut(),
+                &mut ins_mapping,
+                &mut dissasembly,
+                Some(nes.cpu.get_pc()),
+            );
         }
 
         let mut fs = FrameState {
@@ -212,15 +253,17 @@ fn nes_loop(mut nes: Nes, mut ui: AppUI) -> Result<(), Box<dyn Error>> {
                 update: step_instruction,
                 text: &dissasembly,
                 mapping: &ins_mapping,
+                bkpt,
             },
             ppu_info: PpuInfo {
                 chr_bank_0: chr_bank_0_canvas.as_slice(),
                 chr_bank_1: chr_bank_1_canvas.as_slice(),
                 palettes,
-                selected_palette
-            }
+                selected_palette,
+            },
         };
-        ui.update(&mut fs);
+        fs = ui.update(fs);
+        bkpt = fs.dissasembly.bkpt;
         pfs = PersistentFrameState::save_persistent_info(fs);
 
         step_frame = false;
@@ -278,7 +321,9 @@ fn init() -> Result<(Nes, AppUI), Box<dyn Error>> {
         NOP
     */
 
-    nes.cpu.reset()?;
+    nes.reset()?;
+
+    // nes.cpu.registers.pc = 0xC000;
 
     let app_ui =
         if std::env::args().len() > 1 && std::env::args().skip(1).next().unwrap() == "--light" {

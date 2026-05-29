@@ -25,6 +25,7 @@ pub struct Dissassebly<'a> {
     pub update: bool,
     pub text: &'a str,
     pub mapping: &'a HashMap<u16, (usize, usize, u16)>,
+    pub bkpt: Option<u16>,
 }
 
 pub struct MemEdit<'a> {

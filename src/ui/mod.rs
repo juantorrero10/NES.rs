@@ -279,7 +279,7 @@ impl AppUI {
         }
     }
 
-    pub fn update(&mut self, st: &mut FrameState) {
+    pub fn update<'a>(&mut self, mut st: FrameState<'a>) -> FrameState<'a> {
         self.text_buffer.clear();
         let buffer = &mut self.text_buffer;
 
@@ -393,7 +393,7 @@ impl AppUI {
                     &self.fonts,
                     &mut self.options,
                     buffer,
-                    st,
+                    &mut st,
                 );
             });
         ui.window("CPU")
@@ -474,7 +474,7 @@ impl AppUI {
                     &mut self.options,
                     &mut self.addr_memedit_buffer,
                     &mut self.text_buffer,
-                    st,
+                    &mut st,
                 );
             });
         ui.window("Disassemble")
@@ -490,13 +490,15 @@ impl AppUI {
                     &mut self.options,
                     &mut self.addr_disassm_buffer,
                     &mut self.text_buffer,
-                    &st,
+                    &mut st,
                 )
             });
 
         let mut d = self.raylib.handle.begin_drawing(&self.raylib.thread);
         d.clear_background(raylib::prelude::Color::DARKGRAY);
         self.renderer.render(&mut self.ctx, &mut d);
+
+        st
     }
 
     pub fn raylib(&self) -> &RaylibInfo {

@@ -10,7 +10,7 @@ pub fn update(
     options: &mut Options,
     addr_buffer: &mut String,
     text_buffer: &mut String,
-    st: &FrameState,
+    st: &mut FrameState,
 ) {
     macro_rules! fmt_text_colored {
             ($ui:expr, $col:expr, $fmt:literal, $($arg:tt)*) => {
@@ -69,6 +69,18 @@ pub fn update(
     if ui.button("Lock") {
         options.disassm_focus_pc = !options.disassm_focus_pc;
     }
+    ui.same_line();
+    _t.pop();
+    let _t = ui.push_style_color(StyleColor::Button, theme.button);
+    if ui.button("bkpt") {
+        if addr_buffer.is_empty() {
+            st.dissasembly.bkpt = None
+        }
+        else if let Ok(a) = u16::from_str_radix(&addr_buffer, 16) {
+            st.dissasembly.bkpt = Some(a);
+            addr_buffer.clear();
+        }
+    }
     _t.pop();
     let allow_scroll = if options.disassm_focus_pc {
         imgui::WindowFlags::NO_SCROLL_WITH_MOUSE
@@ -123,6 +135,9 @@ pub fn update(
                 } else {
                     padding_text = "   ";
                     line_color = theme.value;
+                }
+                if let Some(bkpt) = st.dissasembly.bkpt && addr == bkpt {
+                    line_color = theme.signal_low;
                 }
                 match st.dissasembly.mapping.get(&addr) {
                     Some((start, end, jump)) => {

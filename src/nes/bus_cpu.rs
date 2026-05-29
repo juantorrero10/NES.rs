@@ -2,7 +2,10 @@ use std::{error::Error, mem};
 
 use thiserror::Error;
 
-use crate::nes::{NesComm, NesEvent, cpu::Flag6502::D, mapper::CpuMapper, ppu::PpuRegister, trigger_read_event, trigger_write_event};
+use crate::nes::{
+    NesComm, NesEvent, cpu::Flag6502::D, mapper::CpuMapper, ppu::PpuRegister, trigger_read_event,
+    trigger_write_event,
+};
 
 // RAM Constants
 const ADDR_RAM_START: u16 = 0x0000;
@@ -20,6 +23,12 @@ const ADDR_IO_START: u16 = 0x4000;
 const ADDR_IO_END: u16 = 0x401F;
 const SIZE_IO: usize = 0x20;
 
+const ADDR_OPEN_BUS_START: u16 = 0x4020;
+const ADDR_OPEN_BUS_END: u16 = 0x5FFF;
+
+const ADDR_MAYBE_SRAM_START: u16 = 0x6000;
+const ADDR_MAYBE_SRAM_END: u16 = 0x7FFF;
+
 const ADDR_ROM_START: u16 = 0x8000;
 const ADDR_ROM_END: u16 = 0xFFFF;
 
@@ -32,19 +41,21 @@ pub enum BusCpuError {
     #[error("{0}")]
     UnknownError(#[from] Box<dyn Error>),
     #[error("The Bus of the CPU couldn't talk to other components as they are not registered.")]
-    CommunicationsNotConnected
+    CommunicationsNotConnected,
 }
 
 pub struct BusCpu {
     ram: [u8; SIZE_RAM],
 
     debug_ppu_reg: [u8; SIZE_PPU_REG],
-    // TODO : better name
-    ppu_additional_reg: u8,
-    controller_io: [u8; SIZE_IO],
+
+    debug_controller_io: [u8; SIZE_IO],
+
     prg_data: Vec<u8>,
     prg_ram: Vec<u8>,
     fake_value: u8,
+
+    open_bus_sim_reg: u8,
 
     mapper: Box<dyn CpuMapper>,
     communications: Option<NesComm>,
@@ -52,16 +63,15 @@ pub struct BusCpu {
 
 type Result<T> = std::result::Result<T, BusCpuError>;
 
-
 enum BusTarget<'a> {
     Memory(&'a mut u8),
     HardwareIntercept {
-        // Some memory accesses dont lie behind clean containters. Instead they need a hardware device manage it. 
+        // Some memory accesses dont lie behind clean containters. Instead they need a hardware device manage it.
         event: NesEvent,
         // Debuggers should not trigger the events but at the same time have the data updated
         // All interceptions requiere a mirrored simulated memory read/write in order to maintain them fresh.
         debug_simulated_target: *mut u8,
-    }
+    },
 }
 
 impl<'a> BusTarget<'a> {
@@ -72,7 +82,6 @@ impl<'a> BusTarget<'a> {
         panic!("It is a hardware intercept");
     }
 }
-
 
 use BusTarget::*;
 
@@ -85,9 +94,10 @@ impl BusCpu {
             // Just debug, for dissasembler and memory viewer
             debug_ppu_reg: [0u8; SIZE_PPU_REG],
 
+            debug_controller_io: [0u8; SIZE_IO],
 
-            ppu_additional_reg: 0,
-            controller_io: [0u8; SIZE_IO],
+            open_bus_sim_reg: 0,
+
             mapper,
             prg_data,
             prg_ram,
@@ -100,7 +110,12 @@ impl BusCpu {
         self.communications = Some(comm);
     }
 
-    fn resolve_addr(&mut self, mut addr: u16, write: bool, trigger_events: bool) -> Result<BusTarget> {
+    fn resolve_addr(
+        &mut self,
+        mut addr: u16,
+        write: bool,
+        trigger_events: bool,
+    ) -> Result<BusTarget> {
         let input_addr = addr;
         // Map address
         addr = self.mapper.cpu_map_addr(addr);
@@ -108,10 +123,11 @@ impl BusCpu {
         match input_addr {
             ADDR_RAM_START..=ADDR_RAM_END => {
                 addr &= SIZE_RAM as u16 - 1;
-                return Ok(Memory(self
-                    .ram
-                    .get_mut(addr as usize)
-                    .ok_or(BusCpuError::AddrUnMirrored(input_addr))?));
+                return Ok(Memory(
+                    self.ram
+                        .get_mut(addr as usize)
+                        .ok_or(BusCpuError::AddrUnMirrored(input_addr))?,
+                ));
             }
             ADDR_PPU_REG_START..=ADDR_PPU_REG_END => {
                 addr &= SIZE_PPU_REG as u16 - 1;
@@ -123,30 +139,83 @@ impl BusCpu {
 
                 if trigger_events {
                     return if write {
-                        Ok(
-                            HardwareIntercept { 
-                                event: NesEvent::PpuRegWrittenTo(PpuRegister::from_0_to_7(addr)),
-                                debug_simulated_target,
-                            }
-                        )
+                        Ok(HardwareIntercept {
+                            event: NesEvent::PpuRegWrittenTo(PpuRegister::from_0_to_7(addr)),
+                            debug_simulated_target,
+                        })
                     } else {
-                        Ok(
-                            HardwareIntercept { 
-                                event: NesEvent::PpuRegReadFrom(PpuRegister::from_0_to_7(addr)),
-                                debug_simulated_target,
-                            }
-                        )
-                    }
+                        Ok(HardwareIntercept {
+                            event: NesEvent::PpuRegReadFrom(PpuRegister::from_0_to_7(addr)),
+                            debug_simulated_target,
+                        })
+                    };
                 }
                 // Debug only
                 Ok(Memory(debug_simulated_target))
             }
+            ADDR_IO_START..=ADDR_IO_END => {
+                let simulated = self
+                    .debug_controller_io
+                    .get_mut((addr & 0x1f) as usize)
+                    .ok_or(BusCpuError::AddrUnMirrored(input_addr))?;
+                if trigger_events {
+                    if write {
+                        return match addr {
+                            0x4000..=0x4013 | 0x4015 | 0x4017 => Ok(HardwareIntercept {
+                                event: NesEvent::ApuWrittenTo(addr),
+                                debug_simulated_target: simulated,
+                            }),
+                            0x4014 => Ok(HardwareIntercept {
+                                event: NesEvent::PpuRegWrittenTo(PpuRegister::OAMDMACopy),
+                                debug_simulated_target: simulated,
+                            }),
+                            0x4016 => Ok(HardwareIntercept {
+                                event: NesEvent::ControllerWrittenTo(addr),
+                                debug_simulated_target: simulated,
+                            }),
+                            _ => Ok(Memory(&mut self.open_bus_sim_reg)),
+                        };
+                    } else {
+                        return match addr {
+                            0x4000..=0x4014 => {
+                                self.fake_value = 0;
+                                Ok(Memory(&mut self.fake_value))
+                            }
+                            0x4015 => Ok(HardwareIntercept {
+                                event: NesEvent::ApuReadFrom(addr),
+                                debug_simulated_target: simulated,
+                            }),
+                            0x4016 | 0x4017 => Ok(HardwareIntercept {
+                                event: NesEvent::ControllerReadFrom(addr),
+                                debug_simulated_target: simulated,
+                            }),
+                            _ => Ok(Memory(&mut self.open_bus_sim_reg)),
+                        };
+                    }
+                }
+
+                Ok(Memory(simulated))
+            }
+            ADDR_OPEN_BUS_START..=ADDR_OPEN_BUS_END => {
+                if trigger_events {
+                    return Ok(Memory(&mut self.open_bus_sim_reg));
+                }
+                return Err(BusCpuError::AddrRangeNotImplemented(input_addr));
+            }
+            ADDR_MAYBE_SRAM_START..=ADDR_MAYBE_SRAM_END => {
+                return Ok(Memory(
+                    self.prg_ram
+                        .get_mut(addr as usize & 0x1fff)
+                        .ok_or(BusCpuError::AddrUnMirrored(input_addr))?,
+                ));
+            }
             ADDR_ROM_START..=ADDR_ROM_END => {
                 addr &= !(1 << 15);
-                return Ok(Memory(self
-                    .prg_data
-                    .get_mut(addr as usize)
-                    .ok_or(BusCpuError::AddrUnMirrored(input_addr))?));
+                return Ok(Memory(
+                    self.prg_data
+                        .get_mut(addr as usize)
+                        .ok_or(BusCpuError::AddrUnMirrored(input_addr))?,
+                ));
             }
             _ => Err(BusCpuError::AddrRangeNotImplemented(input_addr)),
         }
@@ -154,17 +223,25 @@ impl BusCpu {
 
     #[inline(always)]
     pub fn read(&mut self, addr: u16) -> Result<u8> {
+        let data_ret;
         match self.resolve_addr(addr, false, true)? {
-            Memory(r) => { return Ok(*r); }
-            HardwareIntercept{ event, debug_simulated_target} => {
+            Memory(r) => {
+                data_ret = *r;
+            }
+            HardwareIntercept {
+                event,
+                debug_simulated_target,
+            } => {
                 let comms = self.communications.as_ref().unwrap();
                 let data = trigger_read_event(comms, event)?;
                 unsafe {
                     *debug_simulated_target = data;
                 }
-                Ok(data)
+                data_ret = data;
             }
         }
+        self.open_bus_sim_reg = data_ret;
+        Ok(data_ret)
     }
 
     /// Read 16bit number (little endian, LSB first)
@@ -176,13 +253,21 @@ impl BusCpu {
     #[inline(always)]
     pub fn write(&mut self, addr: u16, data: u8) -> Result<()> {
         match self.resolve_addr(addr, true, true)? {
-            Memory(r) => { *r = data; Ok(()) }
-            HardwareIntercept{ event, debug_simulated_target} => {
+            Memory(r) => {
+                *r = data;
+                self.open_bus_sim_reg = data;
+                Ok(())
+            }
+            HardwareIntercept {
+                event,
+                debug_simulated_target,
+            } => {
                 let comms = self.communications.as_ref().unwrap();
                 trigger_write_event(comms, event, data)?;
                 unsafe {
                     *debug_simulated_target = data;
                 }
+                self.open_bus_sim_reg = data;
                 Ok(())
             }
         }

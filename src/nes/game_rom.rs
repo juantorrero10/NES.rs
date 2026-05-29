@@ -104,7 +104,7 @@ pub fn load_rom(filepath: &str) -> Result<GameROMArtifacts> {
     Ok(GameROMArtifacts {
         prg_data,
         chr_data,
-        prg_ram: vec![0u8; header.prg_ram_size as usize],
+        prg_ram: vec![0u8; 0x2000],
         cpu_mapper: cpum,
 		ppu_mapper: ppum,
         mirror,
