@@ -135,6 +135,7 @@ impl Nes {
 enum NesEvent {
     PpuRegWrittenTo(PpuRegister),
     PpuRegReadFrom(PpuRegister),
+    OAMDMATransfer(*const u8, usize),
     ControllerReadFrom(u16),
     ControllerWrittenTo(u16),
     ApuWrittenTo(u16),
@@ -173,6 +174,10 @@ fn trigger_write_event(comm: &NesComm, e: NesEvent, data: u8) -> std::result::Re
         }
         NesEvent::ControllerWrittenTo(addr) => {
             Ok(comm.controller.borrow_mut().event_cpu_has_written(addr, data))
+        }
+        NesEvent::OAMDMATransfer(ptr, len) => {
+            let slice = unsafe { std::slice::from_raw_parts(ptr, len) };
+            Ok(comm.ppu.borrow_mut().event_oam_dma_transfer(slice)?)
         }
         _ => Err(Box::new(NesError::UnhandledEvent(e)))
     }

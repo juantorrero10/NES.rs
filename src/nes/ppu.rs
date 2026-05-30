@@ -40,7 +40,9 @@ impl BusPpu {
     fn new(mapper: Box<dyn PpuMapper>, mirroring: MemoryMirroring) -> Self {
         BusPpu {
             mapper,
-            chips: BusPpuChips {nametables: [0; 2 * SIZE_NAME_TBL] },
+            chips: BusPpuChips {
+                nametables: [0; 2 * SIZE_NAME_TBL],
+            },
             mirroring,
             palettes: [0; SIZE_PALETTE],
             fake_value: 0,
@@ -85,8 +87,12 @@ impl BusPpu {
             }
             ADDR_PAL_START..=ADDR_PAL_END => {
                 mapped_addr &= (SIZE_PALETTE as u16) - 1;
-                let mut palette_idx = mapped_addr & (SIZE_PALETTE as u16- 1);
-                if palette_idx == 0x0010 || palette_idx == 0x0014 || palette_idx == 0x0018 || palette_idx == 0x001C {
+                let mut palette_idx = mapped_addr & (SIZE_PALETTE as u16 - 1);
+                if palette_idx == 0x0010
+                    || palette_idx == 0x0014
+                    || palette_idx == 0x0018
+                    || palette_idx == 0x001C
+                {
                     palette_idx &= 0x000F;
                 }
                 return self.palettes.get_mut(palette_idx as usize).unwrap();
@@ -121,26 +127,27 @@ pub struct Ppu {
     pub frame_complete: bool,
     pub nmi_signal: bool,
     pub is_odd_frame: bool,
-    
+
     scanline: isize,
     cycle: usize,
-    
+
     screen_data: [u8; SCREEN_SIZE],
-    
+
     ctrl: u8,
     status: u8,
     mask: u8,
     fine_x: u8,
-    vram: IVRAM,
-    oam: IOAM,
+    vram: VRAM,
+    oam: OAM,
 
-    bg_regs: BGSRegs,
+    bg_regs: BGRegs,
+    fg_regs: FGRegs,
 
     bus_ppu: BusPpu,
 }
 
 #[derive(Default)]
-struct BGSRegs {
+struct BGRegs {
     shift_pat_low: u16,
     shift_pat_high: u16,
 
@@ -153,8 +160,23 @@ struct BGSRegs {
     latch_pat_hi: u8,
 }
 
+#[derive(Default, Clone, Copy)]
+struct ActiveSprite {
+    pattern_lo: u8,
+    pattern_hi: u8,
+    x_counter: u8,
+    attribute: OAFlags,
+}
+
 #[derive(Default)]
-struct IVRAM {
+struct FGRegs {
+    sprites: [ActiveSprite; 8],
+    active_sprites_count: usize,
+    sprite0_possible: bool,
+}
+
+#[derive(Default)]
+struct VRAM {
     addr: u16,
     t_addr: u16,
     // Set Low: High byte, Set High: Low Byte
@@ -162,39 +184,62 @@ struct IVRAM {
     delayed_data: u8,
 }
 
-struct IOAM {
-    offset: usize,
-    mem: [u8; 256],
+struct OAM {
+    addr: usize,
+    mem: [OAttribute; 64],
+
+
+    secondary_mem: [OAttribute; 8],    
 }
 
-#[repr(u16)]
-#[derive(Debug)]
-pub enum PpuRegister {
-    Ctrl = 0x2000,
-    Mask = 0x2001,
-    Status = 0x2002,
-    OamAddr = 0x2003,
-    OamData = 0x2004,
-    Scroll = 0x2005,
-    VRAMAddr = 0x2006,
-    VRAMData = 0x2007,
-
-    OAMDMACopy = 0x4014,
+#[derive(Clone, Copy)]
+#[repr(packed)]
+struct OAttribute {
+    y_pos: u8,
+    tile_id: u8,
+    flags: OAFlags,
+    x_pos: u8,
 }
 
-impl PpuRegister {
-    pub fn from_0_to_7(mut offset: u16) -> Self {
-        offset &= 0x7;
-        match offset {
-            0 => Ctrl,
-            1 => Mask,
-            2 => Status,
-            3 => OamAddr,
-            4 => OamData,
-            5 => Scroll,
-            6 => VRAMAddr,
-            7 => VRAMData,
-            _ => unreachable!(),
+impl Default for OAttribute {
+    fn default() -> Self {
+        Self {
+            y_pos: 0xFF,
+            tile_id: 0xFF,
+            flags: OAFlags { reg: 0xFF },
+            x_pos: 0xFF,
+        }
+    }
+}
+
+#[derive(Copy, Clone, Default)]
+#[repr(packed)]
+struct OAFlags {
+    reg: u8,
+}
+
+#[repr(u8)]
+#[derive(Clone, Copy)]
+enum OAFFields {
+    SpritePalIndex = 0x3,
+    Unused = 0x1C,
+    Priority = 0x20,
+    HorizontalFlip = 0x40,
+    VerticalFlip = 0x80,
+}
+
+use OAFFields::*;
+
+impl OAFlags {
+    #[inline(always)]
+    fn get(&self, f: OAFFields) -> u8 {
+        let v = self.reg & (f as u8);
+        match f {
+            SpritePalIndex => v,
+            Unused => v >> 2,
+            Priority => v >> 5,
+            HorizontalFlip => v >> 6,
+            VerticalFlip => v >> 7,
         }
     }
 }
@@ -223,7 +268,10 @@ impl Ppu {
         self.frame_complete = false;
         // Background register manipulation timeline.
         match self.scanline {
-            -1..=239 => self.scanline_routine(),
+            -1..=239 => {
+                self.scanline_bg_routine();
+                self.scanline_fg_routine();
+            }
             240 => {
                 // Post render line
             }
@@ -231,13 +279,12 @@ impl Ppu {
                 // V-Blank line
                 if self.cycle == 1 {
                     self.status |= STATUS_VBLANK;
-                    
-                    if (self.ctrl & 0x80) != 0 { 
+
+                    if (self.ctrl & 0x80) != 0 {
                         self.nmi_signal = true;
                     }
                 }
-
-            },
+            }
             242..=260 => {
                 // V-Blank stage
                 // Let the cpu do its thing
@@ -245,18 +292,48 @@ impl Ppu {
             _ => unreachable!(),
         }
 
+        let (pal_idx, col_idx) = {
+            let mut fg_pal = 0;
+            let mut fg_col = 0;
 
-        // Get colors from registers
-        if (self.mask & MASK_RENDER_BG) != 0 {
-            let (pal_idx, col_idx) = self.extract_colors_from_registers();
-            let mut system_color_idx = self.bus_ppu.read(ADDR_PAL_START + (4 * pal_idx as u16) + col_idx as u16);
-            // restraint to the 64 colors
-            system_color_idx &= 0x3f;
-            // FINALLY 
-            let rbga_color = NES_COLOR_PALETTE[system_color_idx as usize];
-            self.set_pixel(self.cycle, self.scanline, rbga_color);
-        }
+            let mut bg_pal = 0;
+            let mut bg_col = 0;
 
+            let mut fg_priority = false;
+            let mut sprite_zero_rendered = false;
+
+            if (self.mask & MASK_RENDER_SPRITES) != 0 {
+                (fg_pal, fg_col, fg_priority, sprite_zero_rendered) =
+                    self.extract_foreground_color();
+            }
+
+            if (self.mask & MASK_RENDER_BG) != 0 {
+                (bg_pal, bg_col) = self.extract_background_color();
+            }
+
+            if bg_col > 0 && fg_col > 0 && self.cycle <= 256 {
+                if self.fg_regs.sprite0_possible && sprite_zero_rendered {
+                    if self.mask & (MASK_RENDER_LEFT_SPR | MASK_RENDER_LEFT_BG) != 0 {
+                        if self.cycle >= 1 {
+                            self.status |= STATUS_SPRITE_0_HIT;
+                        }
+                    } else if self.cycle >= 9 {
+                        self.status |= STATUS_SPRITE_0_HIT;
+                    }
+                }
+            }
+
+            self.blend_colors((fg_pal, fg_col), (bg_pal, bg_col), fg_priority)
+        };
+
+        let mut system_color_idx = self
+            .bus_ppu
+            .read(ADDR_PAL_START + (4 * pal_idx as u16) + col_idx as u16);
+        // restraint to the 64 colors
+        system_color_idx &= 0x3f;
+        // FINALLY
+        let rbga_color = NES_COLOR_PALETTE[system_color_idx as usize];
+        self.set_pixel(self.cycle, self.scanline, rbga_color);
 
         self.cycle += 1;
         if self.cycle > CYCLE_WIDTH {
@@ -270,7 +347,27 @@ impl Ppu {
         }
     }
 
-    fn scanline_routine(&mut self) {
+    #[inline(always)]
+    fn blend_colors(
+        &self,
+        foreground: (u8, u8),
+        background: (u8, u8),
+        fg_priority: bool,
+    ) -> (u8, u8) {
+        match (foreground.1 != 0, background.1 != 0) {
+            (false, false) => (0, 0),
+            (false, true) => background,
+            (true, false) => foreground,
+            _ => {
+                if fg_priority {
+                    return foreground;
+                }
+                background
+            }
+        }
+    }
+
+    fn scanline_bg_routine(&mut self) {
         // Guard
         if !self.is_rendering_enabled() {
             return;
@@ -292,12 +389,12 @@ impl Ppu {
                     self.increment_scroll_y();
                 }
             }
-            257 => self.copy_scroll_x(),
+            257 => self.transfer_scroll_x(),
             258..=320 => {
                 // Unused NT reads
 
                 if self.scanline == -1 && self.cycle >= 280 && self.cycle <= 304 {
-                    self.copy_scroll_y();
+                    self.transfer_scroll_y();
                 }
             }
             321..=336 => {
@@ -305,11 +402,142 @@ impl Ppu {
             }
             // Dummy NT reads
             337..=340 => {
-                let dummy_nt_addr = 0x2000 | (self.vram.addr & (VRAM_COARSE_X_MASK | VRAM_COARSE_Y_MASK | VRAM_NAMETABLE_MASK));
-                // Although the data is discarded, mappers can syncronize stuff in the reads 
-                let _ = self.bus_ppu.read(dummy_nt_addr); 
+                let dummy_nt_addr = 0x2000
+                    | (self.vram.addr
+                        & (VRAM_COARSE_X_MASK | VRAM_COARSE_Y_MASK | VRAM_NAMETABLE_MASK));
+                // Although the data is discarded, mappers can syncronize stuff in the reads
+                let _ = self.bus_ppu.read(dummy_nt_addr);
             }
             _ => unreachable!(),
+        }
+    }
+
+    fn scanline_fg_routine(&mut self) {
+        if !self.is_rendering_enabled() {
+            return;
+        }
+
+        // Shift registers
+        if self.cycle > 0 && self.cycle <= 256 {
+            self.shift_fg_registers();
+        }
+        match self.cycle {
+            0 => {}
+            // Clean secondary Mem if not in pre-render line
+            1 => {
+                if self.scanline != -1 {
+                    self.oam.secondary_mem = [OAttribute::default(); 8];
+                    self.fg_regs.active_sprites_count = 0;
+                }
+            }
+            2..=64 => {
+                // On real hardware cycle 1 to 64 are spent cleaning up seconday OAM
+                // Since we can do it in one go lets just do nothing on the remaining cycles.
+            }
+            // Sprite evalutation for next line if not on pre-render
+            // Again on real hardware this takes all cycles from 65 to 256 to do.
+            // We can just get it over with in cycle 256.
+            65..=255 => {}
+            256 => {
+                if self.scanline != 1 {
+                    self.sprite_eval();
+                }
+            }
+
+            257..=319 => {}
+            320 => {
+                self.sprite_fetch();
+            }
+
+            // Wait for next line
+            321..=340 => {}
+
+            _ => unreachable!(),
+        }
+    }
+
+    fn sprite_eval(&mut self) {
+        self.fg_regs.sprite0_possible = false;
+        for (i, sprite) in self.oam.mem.iter().enumerate() {
+            let sprite_height = if (self.ctrl & CTRL_SPRITE_SIZE) != 0 {
+                16
+            } else {
+                8
+            };
+
+            // Check vertical intersection
+            let sc = self.scanline as u8;
+            if sc < sprite.y_pos || sc >= sprite.y_pos + sprite_height {
+                continue;
+            }
+
+            if self.fg_regs.active_sprites_count >= 8 && self.scanline != -1 {
+                self.status |= STATUS_SPRITE_OVERFLOW;
+                break;
+            }
+
+            if i == 0 {
+                self.fg_regs.sprite0_possible = true;
+            }
+            // Copy to seconday
+            self.oam.secondary_mem[self.fg_regs.active_sprites_count] = *sprite;
+            self.fg_regs.active_sprites_count += 1;
+        }
+    }
+
+    fn sprite_fetch(&mut self) {
+        for (i, active_sprite) in self.oam.secondary_mem.iter().enumerate() {
+            let mut row = self.scanline as u8 - active_sprite.y_pos;
+
+            let sprite_height = if (self.ctrl & CTRL_SPRITE_SIZE) != 0 {
+                16
+            } else {
+                8
+            };
+
+            if active_sprite.flags.get(VerticalFlip) != 0 {
+                row = (sprite_height - 1) - row;
+            }
+
+            // Fetch of CHR ROM Pattern tables
+            let addr;
+            if sprite_height == 8 {
+                let base_addr = if (self.ctrl & CTRL_SPRITE_PATTERN) != 0 {
+                    0x1000
+                } else {
+                    0x0000
+                };
+                addr = base_addr | ((active_sprite.tile_id as u16) << 4) | (row as u16 & 7);
+            } else {
+                let base_addr = if (active_sprite.tile_id & 1) != 0 {
+                    0x1000
+                } else {
+                    0x0000
+                };
+                let mut tile_idx = (active_sprite.tile_id & 0xfe) as u16;
+                if row > 8 {
+                    tile_idx += 1;
+                }
+                addr = base_addr | (tile_idx << 4) | (row as u16 & 7);
+            }
+
+            let mut pattern_lo = self.bus_ppu.read(addr);
+            let mut pattern_hi = self.bus_ppu.read(addr + 8);
+
+            if active_sprite.flags.get(HorizontalFlip) != 0 {
+                pattern_lo = pattern_lo.reverse_bits();
+                pattern_hi = pattern_hi.reverse_bits();
+            }
+
+            self.fg_regs.sprites[i] = ActiveSprite {
+                pattern_lo,
+                pattern_hi,
+                x_counter: active_sprite.x_pos,
+                attribute: active_sprite.flags,
+            }
+        }
+        for s in &mut self.fg_regs.sprites[self.fg_regs.active_sprites_count..8] {
+            *s = ActiveSprite::default();
         }
     }
 
@@ -318,14 +546,12 @@ impl Ppu {
         // Process each of the 8 sub-cycles
         let sub_cycle = (self.cycle - 1) % 8;
         match sub_cycle {
-            0 => { }
+            0 => {}
             // Name table read
             1 => {
-
                 let nt_addr = 0x2000
-                    | (self.vram.addr & (VRAM_COARSE_X_MASK
-                        | VRAM_COARSE_Y_MASK
-                        | VRAM_NAMETABLE_MASK));
+                    | (self.vram.addr
+                        & (VRAM_COARSE_X_MASK | VRAM_COARSE_Y_MASK | VRAM_NAMETABLE_MASK));
                 self.bg_regs.latch_name = self.bus_ppu.read(nt_addr)
             }
             2 => {}
@@ -334,20 +560,23 @@ impl Ppu {
                 // Grab attribute byte
                 let v = self.vram.addr;
                 // VRAM_ADDR (15 bits) (y: Nametable Y, Y: Coarse Y), same with x
-                // _FFFyxYYYYYXXXXX         
+                // _FFFyxYYYYYXXXXX
                 // Attribute address to read (14 bits)
-                // __10yx1111YYYXXX   
-                // __10000000000000 = 0x2000 (Nametable offset in memory)      
+                // __10yx1111YYYXXX
+                // __10000000000000 = 0x2000 (Nametable offset in memory)
                 // __00001111000000 = 0x03C0 (Attribute offset inside nametable)
                 // (YYY: Coarse Y upper 3 bits, essentially coarse_y // 4)
                 // Same with Coarse X
-                // 
+                //
 
                 let coarse_x = v & VRAM_COARSE_X_MASK;
                 let coarse_y = (v & VRAM_COARSE_Y_MASK) >> 5;
 
-                let attr_addr =
-                    0x2000 | (v & VRAM_NAMETABLE_MASK) | 0x03C0 | ((coarse_y >> 2) << 3) | (coarse_x >> 2);
+                let attr_addr = 0x2000
+                    | (v & VRAM_NAMETABLE_MASK)
+                    | 0x03C0
+                    | ((coarse_y >> 2) << 3)
+                    | (coarse_x >> 2);
                 let attr_byte = self.bus_ppu.read(attr_addr);
 
                 let shift = ((coarse_y & 2) << 1) | (coarse_x & 2);
@@ -385,7 +614,7 @@ impl Ppu {
         }
     }
 
-    fn extract_colors_from_registers(&self) -> (u8, u8) {
+    fn extract_background_color(&self) -> (u8, u8) {
         let mux = 0x8000 >> self.fine_x;
 
         let pixel_bit0 = (self.bg_regs.shift_pat_low & mux) > 0;
@@ -401,7 +630,32 @@ impl Ppu {
         (palette, pixel)
     }
 
-    
+    fn extract_foreground_color(&self) -> (u8, u8, bool, bool) {
+        let mut pal_idx = 0;
+        let mut col_idx = 0;
+        let mut priority = false;
+        let mut is_zero_rendered = false;
+        for (i, spr) in self.fg_regs.sprites.iter().enumerate() {
+            if spr.x_counter != 0 {
+                continue;
+            }
+            let col_lo = (spr.pattern_lo & 0x80) != 0;
+            let col_hi = (spr.pattern_hi & 0x80) != 0;
+            col_idx = (col_hi as u8) << 1 | col_lo as u8;
+
+            if col_idx == 0 {
+                continue;
+            }
+
+            pal_idx = spr.attribute.get(SpritePalIndex) + 4;
+            priority = spr.attribute.get(Priority) == 0;
+            is_zero_rendered = i == 0;
+
+            break;
+        }
+        (pal_idx, col_idx, priority, is_zero_rendered)
+    }
+
     #[inline(always)]
     fn set_pixel(&mut self, x: usize, y: isize, data: [u8; 3]) {
         if y < 0 {
@@ -432,7 +686,6 @@ impl Ppu {
                     self.vram.addr ^= VRAM_NAMETABLE_Y_MASK;
                 }
                 coarse_y = 0;
-                
             }
             self.vram.addr = (self.vram.addr & !VRAM_COARSE_Y_MASK) | coarse_y << 5;
         }
@@ -441,14 +694,14 @@ impl Ppu {
     }
 
     #[inline(always)]
-    fn copy_scroll_x(&mut self) {
+    fn transfer_scroll_x(&mut self) {
         // Copy coarse x and nametable x
         let mask = VRAM_COARSE_X_MASK | VRAM_NAMETABLE_X_MASK;
         self.vram.addr = (self.vram.addr & !mask) | (self.vram.t_addr & mask);
     }
 
     #[inline(always)]
-    fn copy_scroll_y(&mut self) {
+    fn transfer_scroll_y(&mut self) {
         // copy scroll y nametable y and fine y
         let mask = VRAM_COARSE_Y_MASK | VRAM_NAMETABLE_Y_MASK | VRAM_FINE_Y_MASK;
         self.vram.addr = (self.vram.addr & !mask) | (self.vram.t_addr & mask);
@@ -462,7 +715,7 @@ impl Ppu {
             coarse_x = 0;
             // Flip Name table X Bit
             self.vram.addr ^= VRAM_NAMETABLE_X_MASK;
-        } 
+        }
         coarse_x &= 0x1f;
         self.vram.addr = (self.vram.addr & !VRAM_COARSE_X_MASK) | coarse_x;
     }
@@ -480,6 +733,18 @@ impl Ppu {
             self.bg_regs.shift_pat_high <<= 1;
             self.bg_regs.shift_att_low <<= 1;
             self.bg_regs.shift_att_high <<= 1;
+        }
+    }
+
+    #[inline(always)]
+    fn shift_fg_registers(&mut self) {
+        for spr in &mut self.fg_regs.sprites {
+            if spr.x_counter != 0 {
+                spr.x_counter -= 1;
+            } else {
+                spr.pattern_lo <<= 1;
+                spr.pattern_hi <<= 1;
+            }
         }
     }
 
@@ -503,21 +768,53 @@ impl Ppu {
         self.bg_regs.shift_att_low = (self.bg_regs.shift_att_low & 0xFF00) | inflated_att0;
         self.bg_regs.shift_att_high = (self.bg_regs.shift_att_high & 0xFF00) | inflated_att1;
     }
-
 }
 
 // Other Ppu functionalities
+
+#[repr(u16)]
+#[derive(Debug)]
+pub enum PpuRegister {
+    Ctrl = 0x2000,
+    Mask = 0x2001,
+    Status = 0x2002,
+    OamAddr = 0x2003,
+    OamData = 0x2004,
+    Scroll = 0x2005,
+    VRAMAddr = 0x2006,
+    VRAMData = 0x2007,
+}
+
+impl PpuRegister {
+    pub fn from_0_to_7(mut offset: u16) -> Self {
+        offset &= 0x7;
+        match offset {
+            0 => Ctrl,
+            1 => Mask,
+            2 => Status,
+            3 => OamAddr,
+            4 => OamData,
+            5 => Scroll,
+            6 => VRAMAddr,
+            7 => VRAMData,
+            _ => unreachable!(),
+        }
+    }
+}
+
 impl Ppu {
     pub fn new(mapper: Box<dyn PpuMapper>, mirroring: MemoryMirroring) -> Self {
         Ppu {
             bus_ppu: BusPpu::new(mapper, mirroring),
             screen_data: [0u8; SCREEN_SIZE],
-            oam: IOAM {
-                mem: [0u8; 256],
-                offset: 0,
+            oam: OAM {
+                mem: [OAttribute::default(); 64],
+                addr: 0,
+                secondary_mem: [OAttribute::default(); 8],
             },
-            vram: IVRAM::default(),
-            bg_regs: BGSRegs::default(),
+            vram: VRAM::default(),
+            bg_regs: BGRegs::default(),
+            fg_regs: FGRegs::default(),
             frame_complete: false,
             nmi_signal: false,
             is_odd_frame: false,
@@ -543,11 +840,10 @@ impl Ppu {
 
         self.fine_x = 0;
 
-
         self.vram.delayed_data = 0;
         self.vram.latch = false;
 
-        self.oam.offset;
+        self.oam.addr;
 
         self.screen_data.fill(0);
     }
@@ -564,10 +860,18 @@ impl Ppu {
                 self.mask = data;
             }
             OamAddr => {
-                self.oam.offset = data as usize;
+                self.oam.addr = data as usize;
             }
             OamData => {
-                self.oam.mem[self.oam.offset] = data;
+                match self.oam.addr & 0x3 {
+                    0 => self.oam.mem[self.oam.addr / 4].y_pos = data,
+                    1 => self.oam.mem[self.oam.addr / 4].tile_id = data,
+                    2 => self.oam.mem[self.oam.addr / 4].flags.reg = data,
+                    3 => self.oam.mem[self.oam.addr / 4].x_pos = data,
+                    _ => unreachable!(),
+                }
+                self.oam.addr += 1;
+                self.oam.addr &= 0xFF;
             }
             Scroll => {
                 if !self.vram.latch {
@@ -620,14 +924,20 @@ impl Ppu {
                 return Ok(ret);
             }
             OamData => {
-                return Ok(self.oam.mem[self.oam.offset]);
+                return Ok(match self.oam.addr & 0x3 {
+                    0 => self.oam.mem[self.oam.addr / 4].y_pos,
+                    1 => self.oam.mem[self.oam.addr / 4].tile_id,
+                    2 => self.oam.mem[self.oam.addr / 4].flags.reg,
+                    3 => self.oam.mem[self.oam.addr / 4].x_pos,
+                    _ => unreachable!(),
+                });
             }
             VRAMData => {
                 let mut fetch = self.vram.delayed_data;
                 self.vram.delayed_data = self.bus_ppu.read(self.vram.addr);
 
                 // Reading paletts bypass this delay
-                if self.vram.addr > ADDR_PAL_START {
+                if self.vram.addr >= ADDR_PAL_START {
                     fetch = self.vram.delayed_data;
                 }
 
@@ -644,6 +954,13 @@ impl Ppu {
             _ => {}
         }
         Ok(0)
+    }
+
+    pub fn event_oam_dma_transfer(&mut self, data: &[u8]) -> Result<()> {
+        assert!(data.len() == 256);
+        let slice = unsafe { std::mem::transmute(&data[..64]) };
+        self.oam.mem.copy_from_slice(slice);
+        Ok(())
     }
 
     #[inline(always)]

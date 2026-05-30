@@ -58,6 +58,7 @@ pub struct BusCpuChips {
     pub ram: [u8; SIZE_RAM],
     pub debug_ppu_reg: [u8; SIZE_PPU_REG],
     pub debug_controller_io: [u8; SIZE_IO],
+    pub oam_transfer_buffer: [u8; 256],
     pub communications: Option<NesComm>,
 }
 
@@ -94,13 +95,14 @@ impl BusCpu {
                 // Just debug, for dissasembler and memory viewer
                 debug_ppu_reg: [0u8; SIZE_PPU_REG],
                 debug_controller_io: [0u8; SIZE_IO],
+                oam_transfer_buffer: [0u8; 256],
                 communications: None,
             },
 
             open_bus_sim_reg: 0,
 
             mapper,
-            
+
             fake_value: 0,
         }
     }
@@ -109,10 +111,11 @@ impl BusCpu {
         self.chips.communications = Some(comm);
     }
 
-    fn resolve_addr(
+    fn bus_operation(
         &mut self,
         mut addr: u16,
         write: bool,
+        data: u8,
         trigger_events: bool,
     ) -> Result<BusTarget> {
         let input_addr = addr;
@@ -126,7 +129,8 @@ impl BusCpu {
             ADDR_RAM_START..=ADDR_RAM_END => {
                 addr &= SIZE_RAM as u16 - 1;
                 return Ok(Memory(
-                    self.chips.ram
+                    self.chips
+                        .ram
                         .get_mut(addr as usize)
                         .ok_or(BusCpuError::AddrUnMirrored(input_addr))?,
                 ));
@@ -135,7 +139,8 @@ impl BusCpu {
                 addr &= SIZE_PPU_REG as u16 - 1;
 
                 let debug_simulated_target = self
-                    .chips.debug_ppu_reg
+                    .chips
+                    .debug_ppu_reg
                     .get_mut(addr as usize)
                     .ok_or(BusCpuError::AddrUnMirrored(input_addr))?;
 
@@ -156,24 +161,39 @@ impl BusCpu {
                 Ok(Memory(debug_simulated_target))
             }
             ADDR_IO_START..=ADDR_IO_END => {
-                let simulated = self
-                    .chips.debug_controller_io
-                    .get_mut((addr & 0x1f) as usize)
-                    .ok_or(BusCpuError::AddrUnMirrored(input_addr))?;
+                macro_rules! get_simulated {
+                    ($addr:expr) => {
+                        self.chips
+                            .debug_controller_io
+                            .get_mut((addr & 0x1f) as usize)
+                            .ok_or(BusCpuError::AddrUnMirrored(input_addr))?
+                    };
+                }
                 if trigger_events {
                     if write {
                         return match addr {
                             0x4000..=0x4013 | 0x4015 | 0x4017 => Ok(HardwareIntercept {
                                 event: NesEvent::ApuWrittenTo(addr),
-                                debug_simulated_target: simulated,
+                                debug_simulated_target: get_simulated!(addr),
                             }),
-                            0x4014 => Ok(HardwareIntercept {
-                                event: NesEvent::PpuRegWrittenTo(PpuRegister::OAMDMACopy),
-                                debug_simulated_target: simulated,
-                            }),
+                            // OAM DMA transfer
+                            0x4014 => {
+                                let starting_address = (data as u16) << 8;
+                                for i in 0..256 {
+                                    let val = self.read(starting_address + i).unwrap();
+                                    self.chips.oam_transfer_buffer[i as usize] = val;
+                                }
+                                Ok(HardwareIntercept {
+                                    event: NesEvent::OAMDMATransfer(
+                                        self.chips.oam_transfer_buffer.as_ptr(),
+                                        256,
+                                    ),
+                                    debug_simulated_target: get_simulated!(addr),
+                                })
+                            }
                             0x4016 => Ok(HardwareIntercept {
                                 event: NesEvent::ControllerWrittenTo(addr),
-                                debug_simulated_target: simulated,
+                                debug_simulated_target: get_simulated!(addr),
                             }),
                             _ => Err(BusCpuError::AddrRangeNotImplemented(input_addr)),
                         };
@@ -185,18 +205,18 @@ impl BusCpu {
                             }
                             0x4015 => Ok(HardwareIntercept {
                                 event: NesEvent::ApuReadFrom(addr),
-                                debug_simulated_target: simulated,
+                                debug_simulated_target: get_simulated!(addr),
                             }),
                             0x4016 | 0x4017 => Ok(HardwareIntercept {
                                 event: NesEvent::ControllerReadFrom(addr),
-                                debug_simulated_target: simulated,
+                                debug_simulated_target: get_simulated!(addr),
                             }),
                             _ => Err(BusCpuError::AddrRangeNotImplemented(input_addr)),
                         };
                     }
                 }
 
-                Ok(Memory(simulated))
+                Ok(Memory(get_simulated!(addr)))
             }
             _ => Err(BusCpuError::AddrRangeNotImplemented(input_addr)),
         }
@@ -205,7 +225,7 @@ impl BusCpu {
     #[inline(always)]
     pub fn read(&mut self, addr: u16) -> Result<u8> {
         let data_ret;
-        match self.resolve_addr(addr, false, true)? {
+        match self.bus_operation(addr, false, 0, true)? {
             Memory(r) => {
                 data_ret = *r;
             }
@@ -233,7 +253,7 @@ impl BusCpu {
 
     #[inline(always)]
     pub fn write(&mut self, addr: u16, data: u8) -> Result<()> {
-        match self.resolve_addr(addr, true, true)? {
+        match self.bus_operation(addr, true, data, true)? {
             Memory(r) => {
                 *r = data;
                 self.open_bus_sim_reg = data;
@@ -256,7 +276,7 @@ impl BusCpu {
 
     #[inline(always)]
     pub fn debug_read(&mut self, addr: u16) -> Result<u8> {
-        return Ok(*(self.resolve_addr(addr, false, false)?.unwrap_memory()));
+        return Ok(*(self.bus_operation(addr, false, 0, false)?.unwrap_memory()));
     }
 
     #[inline(always)]
