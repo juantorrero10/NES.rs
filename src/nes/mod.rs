@@ -44,14 +44,11 @@ impl Nes {
         
         let bus = Rc::new(RefCell::new(BusCpu::new(
             rom.cpu_mapper,
-            rom.prg_data,
-            rom.prg_ram,
         )));
         
         let ppu = Rc::new(RefCell::new(Ppu::new( 
-            rom.ppu_mapper, 
-            rom.chr_data, 
-            rom.mirror
+            rom.ppu_mapper,
+            rom.mirroring
         )));
 
         let apu = Rc::new(RefCell::new(Apu{}));

@@ -4,16 +4,13 @@ const CHR_BANK_SIZE: usize = 8192;
 const NES_MAGIC: u32 = 0x1a53454e; // "NES\x1a"
 
 pub struct GameROMArtifacts {
-    pub prg_data: Vec<u8>,
-    pub chr_data: Vec<u8>,
-    pub prg_ram: Vec<u8>,
     pub cpu_mapper: Box<dyn CpuMapper>,
     pub ppu_mapper: Box<dyn PpuMapper>,
-    pub mirror: MemoryMirroring,
+    pub mirroring: MemoryMirroring,
 }
 
 #[repr(u8)]
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub enum MemoryMirroring {
     Horizontal,
     Vertical,
@@ -56,7 +53,7 @@ use thiserror::Error;
 
 use crate::nes::{
     game_rom::ROMErr::MapperNotImplemented,
-    mapper::{CpuMapper, Mapper0, PpuMapper},
+    mapper::{CpuMapper, CpuMapper0, PpuMapper, PpuMapper0},
 };
 
 pub fn load_rom(filepath: &str) -> Result<GameROMArtifacts> {
@@ -95,32 +92,35 @@ pub fn load_rom(filepath: &str) -> Result<GameROMArtifacts> {
     f.read_exact(prg_data.as_mut_slice())?;
     f.read_exact(chr_data.as_mut_slice())?;
 
-    let (cpum, ppum) = create_mappers(
+    let (cpu_mapper, ppu_mapper) = create_mappers(
         mapper_id,
         header.prg_rom_chunks as usize,
-        header.chr_rom_chunks as usize,
+        header.prg_rom_chunks as usize,
+        header.prg_ram_size as usize,
+        prg_data,
+        chr_data,
     )?;
 
     Ok(GameROMArtifacts {
-        prg_data,
-        chr_data,
-        prg_ram: vec![0u8; 0x2000],
-        cpu_mapper: cpum,
-		ppu_mapper: ppum,
-        mirror,
+        cpu_mapper,
+        ppu_mapper,
+        mirroring: mirror
     })
 }
 
+#[allow(unused_variables)]
 fn create_mappers(
     mapper_id: u8,
     prg_banks: usize,
     chr_banks: usize,
+    prg_ram_size: usize,
+    prg_rom: Vec<u8>,
+    chr_rom: Vec<u8>,
 ) -> Result<(Box<dyn CpuMapper>, Box<dyn PpuMapper>)> {
     match mapper_id {
         0 => Ok({
-            let mapper = Mapper0::new(prg_banks, chr_banks);
-            let cpum = Box::new(mapper.clone());
-            let ppum = Box::new(mapper);
+            let cpum = Box::new(CpuMapper0::new(prg_rom, prg_banks, prg_ram_size));
+            let ppum = Box::new(PpuMapper0::new(chr_rom));
             (cpum, ppum)
         }),
         _ => Err(MapperNotImplemented(mapper_id)),

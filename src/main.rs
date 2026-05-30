@@ -325,8 +325,15 @@ fn init() -> Result<(Nes, AppUI), Box<dyn Error>> {
 
     // nes.cpu.registers.pc = 0xC000;
 
+    let mut light_mode = false;
+    for a in std::env::args() {
+        if a == "--light" {
+            light_mode = true;
+        }
+    }
+
     let app_ui =
-        if std::env::args().len() > 1 && std::env::args().skip(1).next().unwrap() == "--light" {
+        if light_mode {
             AppUI::with_theme(Theme {
                 bg: [0.95, 0.95, 0.9, 1.0],
                 darker_bg: [0.73, 0.73, 0.7, 1.0f32],

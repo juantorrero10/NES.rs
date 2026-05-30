@@ -45,25 +45,25 @@ pub enum BusCpuError {
 }
 
 pub struct BusCpu {
-    ram: [u8; SIZE_RAM],
-
-    debug_ppu_reg: [u8; SIZE_PPU_REG],
-
-    debug_controller_io: [u8; SIZE_IO],
-
-    prg_data: Vec<u8>,
-    prg_ram: Vec<u8>,
     fake_value: u8,
 
     open_bus_sim_reg: u8,
 
     mapper: Box<dyn CpuMapper>,
-    communications: Option<NesComm>,
+
+    chips: BusCpuChips,
+}
+
+pub struct BusCpuChips {
+    pub ram: [u8; SIZE_RAM],
+    pub debug_ppu_reg: [u8; SIZE_PPU_REG],
+    pub debug_controller_io: [u8; SIZE_IO],
+    pub communications: Option<NesComm>,
 }
 
 type Result<T> = std::result::Result<T, BusCpuError>;
 
-enum BusTarget<'a> {
+pub enum BusTarget<'a> {
     Memory(&'a mut u8),
     HardwareIntercept {
         // Some memory accesses dont lie behind clean containters. Instead they need a hardware device manage it.
@@ -86,28 +86,27 @@ impl<'a> BusTarget<'a> {
 use BusTarget::*;
 
 impl BusCpu {
-    pub fn new(mapper: Box<dyn CpuMapper>, prg_data: Vec<u8>, prg_ram: Vec<u8>) -> BusCpu {
+    pub fn new(mapper: Box<dyn CpuMapper>) -> BusCpu {
         // TODO: Cart
         BusCpu {
-            ram: [0u8; SIZE_RAM],
-
-            // Just debug, for dissasembler and memory viewer
-            debug_ppu_reg: [0u8; SIZE_PPU_REG],
-
-            debug_controller_io: [0u8; SIZE_IO],
+            chips: BusCpuChips {
+                ram: [0u8; SIZE_RAM],
+                // Just debug, for dissasembler and memory viewer
+                debug_ppu_reg: [0u8; SIZE_PPU_REG],
+                debug_controller_io: [0u8; SIZE_IO],
+                communications: None,
+            },
 
             open_bus_sim_reg: 0,
 
             mapper,
-            prg_data,
-            prg_ram,
-            communications: None,
+            
             fake_value: 0,
         }
     }
 
     pub fn add_communications(&mut self, comm: NesComm) {
-        self.communications = Some(comm);
+        self.chips.communications = Some(comm);
     }
 
     fn resolve_addr(
@@ -118,13 +117,16 @@ impl BusCpu {
     ) -> Result<BusTarget> {
         let input_addr = addr;
         // Map address
-        addr = self.mapper.cpu_map_addr(addr);
+
+        if self.mapper.need_intercept(addr) {
+            return Ok(self.mapper.intercept(addr, &mut self.chips, write));
+        }
 
         match input_addr {
             ADDR_RAM_START..=ADDR_RAM_END => {
                 addr &= SIZE_RAM as u16 - 1;
                 return Ok(Memory(
-                    self.ram
+                    self.chips.ram
                         .get_mut(addr as usize)
                         .ok_or(BusCpuError::AddrUnMirrored(input_addr))?,
                 ));
@@ -133,7 +135,7 @@ impl BusCpu {
                 addr &= SIZE_PPU_REG as u16 - 1;
 
                 let debug_simulated_target = self
-                    .debug_ppu_reg
+                    .chips.debug_ppu_reg
                     .get_mut(addr as usize)
                     .ok_or(BusCpuError::AddrUnMirrored(input_addr))?;
 
@@ -155,7 +157,7 @@ impl BusCpu {
             }
             ADDR_IO_START..=ADDR_IO_END => {
                 let simulated = self
-                    .debug_controller_io
+                    .chips.debug_controller_io
                     .get_mut((addr & 0x1f) as usize)
                     .ok_or(BusCpuError::AddrUnMirrored(input_addr))?;
                 if trigger_events {
@@ -173,7 +175,7 @@ impl BusCpu {
                                 event: NesEvent::ControllerWrittenTo(addr),
                                 debug_simulated_target: simulated,
                             }),
-                            _ => Ok(Memory(&mut self.open_bus_sim_reg)),
+                            _ => Err(BusCpuError::AddrRangeNotImplemented(input_addr)),
                         };
                     } else {
                         return match addr {
@@ -189,33 +191,12 @@ impl BusCpu {
                                 event: NesEvent::ControllerReadFrom(addr),
                                 debug_simulated_target: simulated,
                             }),
-                            _ => Ok(Memory(&mut self.open_bus_sim_reg)),
+                            _ => Err(BusCpuError::AddrRangeNotImplemented(input_addr)),
                         };
                     }
                 }
 
                 Ok(Memory(simulated))
-            }
-            ADDR_OPEN_BUS_START..=ADDR_OPEN_BUS_END => {
-                if trigger_events {
-                    return Ok(Memory(&mut self.open_bus_sim_reg));
-                }
-                return Err(BusCpuError::AddrRangeNotImplemented(input_addr));
-            }
-            ADDR_MAYBE_SRAM_START..=ADDR_MAYBE_SRAM_END => {
-                return Ok(Memory(
-                    self.prg_ram
-                        .get_mut(addr as usize & 0x1fff)
-                        .ok_or(BusCpuError::AddrUnMirrored(input_addr))?,
-                ));
-            }
-            ADDR_ROM_START..=ADDR_ROM_END => {
-                addr &= !(1 << 15);
-                return Ok(Memory(
-                    self.prg_data
-                        .get_mut(addr as usize)
-                        .ok_or(BusCpuError::AddrUnMirrored(input_addr))?,
-                ));
             }
             _ => Err(BusCpuError::AddrRangeNotImplemented(input_addr)),
         }
@@ -232,7 +213,7 @@ impl BusCpu {
                 event,
                 debug_simulated_target,
             } => {
-                let comms = self.communications.as_ref().unwrap();
+                let comms = self.chips.communications.as_ref().unwrap();
                 let data = trigger_read_event(comms, event)?;
                 unsafe {
                     *debug_simulated_target = data;
@@ -262,7 +243,7 @@ impl BusCpu {
                 event,
                 debug_simulated_target,
             } => {
-                let comms = self.communications.as_ref().unwrap();
+                let comms = self.chips.communications.as_ref().unwrap();
                 trigger_write_event(comms, event, data)?;
                 unsafe {
                     *debug_simulated_target = data;
