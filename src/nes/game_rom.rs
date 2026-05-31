@@ -38,15 +38,13 @@ type Result<T> = std::result::Result<T, ROMErr>;
 pub enum ROMErr {
     #[error("Could not open file: {0}")]
     IoError(#[from] std::io::Error),
-    #[error("{0} is not a NES ROM")]
-    InvalidMagic(String),
+    #[error("{0:?} is not a NES ROM")]
+    InvalidMagic(OsString),
     #[error("Mapper {0} is invalid or not supported by the emulator currently.")]
     MapperNotImplemented(u8),
 }
 use std::{
-    fs::File,
-    io::{Read, Seek},
-    mem,
+    ffi::{OsStr, OsString}, fs::File, io::{Read, Seek}, mem
 };
 
 use thiserror::Error;
@@ -56,12 +54,12 @@ use crate::nes::{
     mapper::{CpuMapper, CpuMapper0, PpuMapper, PpuMapper0},
 };
 
-pub fn load_rom(filepath: &str) -> Result<GameROMArtifacts> {
-    let mut f = File::open(filepath)?;
+pub fn load_rom(filepath: OsString) -> Result<GameROMArtifacts> {
+    let mut f = File::open(&filepath)?;
     let mut header = [0u8; size_of::<NesGameHeader>()];
     f.read(header.as_mut_slice())?;
     let header: NesGameHeader = unsafe { mem::transmute(header) };
-    log::info!("Loaded {}:\n{:#?}", filepath, header);
+    log::info!("Loaded {:?}:\n{:#?}", filepath, header);
 
     if header.magic != NES_MAGIC {
         return Err(ROMErr::InvalidMagic(filepath.to_owned()));

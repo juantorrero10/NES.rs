@@ -8,6 +8,7 @@ pub fn update(
     options: &mut Options,
     addr_buffer: &mut String,
     text_buffer: &mut String,
+    cmd_buffer: &mut String,
     st: &mut FrameState,
 ) {
     macro_rules! fmt_text_colored {
@@ -89,6 +90,47 @@ pub fn update(
         }
     }
     _t.pop();
+
+    ui.same_line();
+    //ui.indent_by(ui.window_pos()[0] * 0.05);
+
+    ui.set_next_item_width(ui.window_size()[0] * 0.15); // Make it small since it's only 2 characters
+    let _h = ui.push_style_color(StyleColor::FrameBg, theme.darker_bg);
+    let _p = ui.push_style_color(StyleColor::TextDisabled, theme.label);
+    let _pi = ui.push_font(fonts[2]);
+    let mut has_jumped = false;
+    let mut target_addr = 0;
+    if ui
+        .input_text("##cmd_input", cmd_buffer)
+        .hint("Command...")
+        .flags(imgui::InputTextFlags::ENTER_RETURNS_TRUE)
+        .build()
+    {
+        // When the user presses Enter, parse the hex string
+        st.memory_editor.paged_changed = true;
+
+        if cmd_buffer.starts_with('$') {
+            match u16::from_str_radix(&cmd_buffer[1..5], 16) {
+                Ok(addr) => {
+                    if cmd_buffer.chars().nth(5) == Some('=') {
+                        match u8::from_str_radix(&cmd_buffer[6..], 16) {
+                            Ok(v) => {
+                                st.memory_editor.modify_byte = Some((addr, v));
+                            }
+                            Err(_) => {}
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        cmd_buffer.clear();
+    }
+    _h.pop();
+    _p.pop();
+    _pi.pop();
+
 
     ui.child_window("mem_page_scroll")
         .size([0.0, ui.window_size()[1] * 0.95])

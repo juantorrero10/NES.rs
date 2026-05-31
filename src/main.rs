@@ -1,10 +1,10 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
+
 use std::{
-    collections::HashMap,
-    error::Error,
-    fmt::Write,
-    thread::sleep,
-    time::{Duration, Instant},
+    collections::HashMap, error::Error, ffi::OsString, fmt::Write, thread::sleep, time::{Duration, Instant}
 };
+
 
 use colored::Colorize;
 use log::info;
@@ -23,6 +23,7 @@ mod nes;
 mod ui;
 
 const FPS60_ELAPSED: u128 = 16667;
+
 
 enum RunMode {
     Stopped,
@@ -249,6 +250,7 @@ fn nes_loop(mut nes: Nes, mut ui: AppUI) -> Result<(), Box<dyn Error>> {
                 current_page: pfs.mem_edit_current_page,
                 search_byte_highlight: pfs.mem_edit_search_byte_highlight,
                 page_data: &mem_page,
+                modify_byte: None
             },
             cpu_info: (&(nes.cpu)).into(),
             dissasembly: Dissassebly {
@@ -270,7 +272,11 @@ fn nes_loop(mut nes: Nes, mut ui: AppUI) -> Result<(), Box<dyn Error>> {
         };
         fs = ui.update(fs);
         bkpt = fs.dissasembly.bkpt;
+        if let Some((a, v)) = fs.memory_editor.modify_byte {
+            nes.bus.borrow_mut().write(a, v)?;
+        }
         pfs = PersistentFrameState::save_persistent_info(fs);
+
 
         step_frame = false;
         step_instruction = false;
@@ -299,15 +305,59 @@ fn nes_loop(mut nes: Nes, mut ui: AppUI) -> Result<(), Box<dyn Error>> {
 }
 
 fn init() -> Result<(Nes, AppUI), Box<dyn Error>> {
+
+    
+    let mut light_mode = false;
+    let mut light_flag = !0usize;
+    for (i, s) in std::env::args().enumerate() {
+        if s == "--light" {
+            light_mode = true;
+            light_flag = i;
+        }
+    }
+
+    let app_ui =
+        if light_mode {
+            AppUI::with_theme(Theme {
+                bg: [0.95, 0.95, 0.9, 1.0],
+                darker_bg: [0.73, 0.73, 0.7, 1.0f32],
+                game_screen_bg: [0.95, 0.95, 0.9, 1.0],
+                label: [0.35, 0.35, 0.35, 1.0],
+                title: [0.25, 0.25, 0.25, 1.0],
+                signal_low: [0.8, 0.17, 0.17, 1.0],
+                signal_high: [0.17, 0.8, 0.17, 1.0],
+                highlight: [0.15, 0.65, 0.67, 0.9],
+                highlight2: [0.98, 0.902, 0.337, 0.9],
+                value: [0.0, 0.0, 0.0, 1.0],
+                button: [0.369, 0.361, 0.431, 1.0],
+            })
+        } else {
+            AppUI::new()
+        };
     let mut args = std::env::args();
-    let bin = args.next().unwrap();
+    let _= args.next();
+    if light_flag == 1 {
+        let _ = args.next();
+    }
+
     let rom_path = match args.next() {
-        Some(f) => f,
+        Some(f) => OsString::from(&f),
         _ => {
-            panic!("Usage: {bin} <ROM path>");
+            let file = rfd::FileDialog::new()
+                .add_filter("NES ROM", &["nes", "rom"])
+                .add_filter("any file", &["*"])
+                .pick_file();
+            match file {
+                Some(p) => {
+                    p.as_os_str().to_owned()
+                }
+                None => {
+                    panic!("a");
+                }
+            }
         }
     };
-    let mut nes = Nes::new(&rom_path)?;
+    let mut nes = Nes::new(rom_path)?;
     /*
         *=$8000
         LDX #10
@@ -331,31 +381,8 @@ fn init() -> Result<(Nes, AppUI), Box<dyn Error>> {
 
     // nes.cpu.registers.pc = 0xC000;
 
-    let mut light_mode = false;
-    for a in std::env::args() {
-        if a == "--light" {
-            light_mode = true;
-        }
-    }
 
-    let app_ui =
-        if light_mode {
-            AppUI::with_theme(Theme {
-                bg: [0.95, 0.95, 0.9, 1.0],
-                darker_bg: [0.73, 0.73, 0.7, 1.0f32],
-                game_screen_bg: [0.95, 0.95, 0.9, 1.0],
-                label: [0.35, 0.35, 0.35, 1.0],
-                title: [0.25, 0.25, 0.25, 1.0],
-                signal_low: [0.8, 0.17, 0.17, 1.0],
-                signal_high: [0.17, 0.8, 0.17, 1.0],
-                highlight: [0.15, 0.65, 0.67, 0.9],
-                highlight2: [0.98, 0.902, 0.337, 0.9],
-                value: [0.0, 0.0, 0.0, 1.0],
-                button: [0.369, 0.361, 0.431, 1.0],
-            })
-        } else {
-            AppUI::new()
-        };
+    
     Ok((nes, app_ui))
 }
 

@@ -1,4 +1,4 @@
-use std::{cell::RefCell, error::Error, fmt::Write, rc::Rc};
+use std::{cell::RefCell, error::Error, ffi::OsString, fmt::Write, rc::Rc};
 
 use thiserror::Error;
 
@@ -39,7 +39,7 @@ pub enum NesError {
 type Result<T> = std::result::Result<T, NesError>;
 
 impl Nes {
-    pub fn new(game_file_path: &str) -> Result<Self> {
+    pub fn new(game_file_path: OsString) -> Result<Self> {
         let rom = game_rom::load_rom(game_file_path)?;
         
         let bus = Rc::new(RefCell::new(BusCpu::new(

@@ -37,6 +37,7 @@ pub struct MemEdit<'a> {
     pub paged_changed: bool,
     pub current_page: u8,
     pub search_byte_highlight: Option<u8>,
+    pub modify_byte: Option<(u16, u8)>,
     pub page_data: &'a [Option<u8>],
 }
 
@@ -57,7 +58,7 @@ impl PersistentFrameState {
         Self {
             mem_edit_current_page: fs.memory_editor.current_page,
             mem_edit_search_byte_highlight: fs.memory_editor.search_byte_highlight,
-            mem_edit_page_changed: fs.memory_editor.paged_changed
+            mem_edit_page_changed: fs.memory_editor.paged_changed, 
         }
     }
 }

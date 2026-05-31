@@ -204,6 +204,7 @@ pub struct AppUI {
     text_buffer: String,
     addr_disassm_buffer: String,
     addr_memedit_buffer: String,
+    mod_memedit_buffer: String,
 }
 
 impl AppUI {
@@ -276,10 +277,11 @@ impl AppUI {
             ctx,
             renderer,
             raylib: RaylibInfo::new(rl, thread, screen, c0, c1, audio),
-            dev_mode: true,
+            dev_mode: false,
             text_buffer: String::with_capacity(128),
             addr_disassm_buffer: String::with_capacity(5),
             addr_memedit_buffer: "0000".to_owned(),
+            mod_memedit_buffer: String::with_capacity(32),
             fonts: [f0, f1, f2],
             theme: t,
         }
@@ -374,6 +376,35 @@ impl AppUI {
             .position(dims.position_game_win(), imgui::Condition::Always)
             .size(dims.size_game_win(), imgui::Condition::Always)
             .build(|| {
+                let video_out = unsafe {std::slice::from_raw_parts(
+                        st.screen.video_output.0,
+                        st.screen.video_output.1,
+                )};
+
+                let has_generated_a_frame = video_out[..4] != [0, 0, 0, 0];
+                if !has_generated_a_frame {
+                    let text = "Press TAB to start the game.";
+                    ui.set_window_font_scale(1.50);
+                    let text_width = ui.calc_text_size(text)[0];
+                    
+
+                    let f = ui.current_font_size();
+
+                    // 2. Get the current window width
+                    let window_width = ui.window_size()[0];
+                    let window_height = ui.window_size()[1];
+
+                    // 3. Set the cursor to the middle (X offset)
+                    // We keep the Y position the same as it currently is
+                    let center_x = (window_width - text_width) * 0.5;
+                    let center_y = (window_height - f) * 0.5;
+                    ui.set_cursor_pos([center_x, center_y]);
+
+                    // 4. Render
+                    ui.text_colored(self.theme.label, text);
+                    ui.set_window_font_scale(1.0);
+                }
+
                 let content_size = ui.content_region_avail();
                 let nes_aspect = 256.0 / 240.0;
                 let window_aspect = content_size[0] / content_size[1];
@@ -398,121 +429,124 @@ impl AppUI {
                 .build(ui);
             });
         _t.pop();
-        ui.window("ppu stuff")
-            .flags(panel_flag)
-            .position(dims.position_right_middle(), imgui::Condition::Always)
-            .size(dims.size_right_middle(), imgui::Condition::Always)
-            .build(|| {
-                window_ppu::update(
-                    ui,
-                    &dims,
-                    &mut self.raylib.chr_bank0,
-                    &mut self.raylib.chr_bank1,
-                    &self.theme,
-                    &self.fonts,
-                    &mut self.options,
-                    buffer,
-                    &mut st,
-                );
-            });
-        ui.window("CPU")
-            .position(dims.position_right_upper(), imgui::Condition::Always)
-            .flags(panel_flag)
-            .size(dims.size_right_upper(), imgui::Condition::Always)
-            .build(|| {
-                ui.dummy([0.0, dims.window_h * 0.004]);
-                ui.indent_by(dims.window_w * 0.007);
-                ui.text_colored(self.theme.title, "CPU INFO");
-                ui.separator();
-                ui.dummy([0.0, dims.size_right_upper()[1] * 0.01]);
-                ui.child_window("info")
-                    .size([
-                        dims.size_right_upper()[0] * 0.92,
-                        dims.size_right_upper()[1] * 0.65,
-                    ])
-                    .border(true)
-                    .build(|| {
-                        let f = ui.push_font(self.fonts[1]);
-                        ui.text_colored(self.theme.label, "PC: ");
-                        ui.same_line();
-                        fmt_text_colored!(ui, self.theme.value, "${:04X}", st.cpu_info.regs.pc);
-                        ui.text_colored(self.theme.label, "SP: ");
-                        ui.same_line();
-                        fmt_text_colored!(ui, self.theme.value, "${:02X}", st.cpu_info.regs.sp);
-                        ui.text_colored(self.theme.label, "A:  ");
-                        ui.same_line();
-                        fmt_text_colored!(ui, self.theme.value, "${:02X}", st.cpu_info.regs.a);
-                        ui.same_line();
-                        ui.text_colored(self.theme.label, "  X: ");
-                        ui.same_line();
-                        fmt_text_colored!(ui, self.theme.value, "${:02X}", st.cpu_info.regs.x);
-                        ui.same_line();
-                        ui.text_colored(self.theme.label, "  Y: ");
-                        ui.same_line();
-                        fmt_text_colored!(ui, self.theme.value, "${:02X}", st.cpu_info.regs.y);
-                        ui.text_colored(self.theme.label, "FLAGS: ");
-                        for i in [
-                            Flag6502::C,
-                            Flag6502::Z,
-                            Flag6502::I,
-                            Flag6502::D,
-                            Flag6502::B,
-                            Flag6502::U,
-                            Flag6502::V,
-                            Flag6502::N,
-                        ] {
+
+        if self.dev_mode {
+            ui.window("ppu stuff")
+                .flags(panel_flag)
+                .position(dims.position_right_middle(), imgui::Condition::Always)
+                .size(dims.size_right_middle(), imgui::Condition::Always)
+                .build(|| {
+                    window_ppu::update(
+                        ui,
+                        &dims,
+                        &mut self.raylib.chr_bank0,
+                        &mut self.raylib.chr_bank1,
+                        &self.theme,
+                        &self.fonts,
+                        &mut self.options,
+                        buffer,
+                        &mut st,
+                    );
+                });
+            ui.window("CPU")
+                .position(dims.position_right_upper(), imgui::Condition::Always)
+                .flags(panel_flag)
+                .size(dims.size_right_upper(), imgui::Condition::Always)
+                .build(|| {
+                    ui.dummy([0.0, dims.window_h * 0.004]);
+                    ui.indent_by(dims.window_w * 0.007);
+                    ui.text_colored(self.theme.title, "CPU INFO");
+                    ui.separator();
+                    ui.dummy([0.0, dims.size_right_upper()[1] * 0.01]);
+                    ui.child_window("info")
+                        .size([
+                            dims.size_right_upper()[0] * 0.92,
+                            dims.size_right_upper()[1] * 0.65,
+                        ])
+                        .border(true)
+                        .build(|| {
+                            let f = ui.push_font(self.fonts[1]);
+                            ui.text_colored(self.theme.label, "PC: ");
                             ui.same_line();
-                            let s: &str = i.into();
-                            if i.reg_has(st.cpu_info.regs.sr) {
-                                ui.text_colored(self.theme.signal_high, s);
-                            } else {
-                                ui.text_colored(self.theme.signal_low, s);
+                            fmt_text_colored!(ui, self.theme.value, "${:04X}", st.cpu_info.regs.pc);
+                            ui.text_colored(self.theme.label, "SP: ");
+                            ui.same_line();
+                            fmt_text_colored!(ui, self.theme.value, "${:02X}", st.cpu_info.regs.sp);
+                            ui.text_colored(self.theme.label, "A:  ");
+                            ui.same_line();
+                            fmt_text_colored!(ui, self.theme.value, "${:02X}", st.cpu_info.regs.a);
+                            ui.same_line();
+                            ui.text_colored(self.theme.label, "  X: ");
+                            ui.same_line();
+                            fmt_text_colored!(ui, self.theme.value, "${:02X}", st.cpu_info.regs.x);
+                            ui.same_line();
+                            ui.text_colored(self.theme.label, "  Y: ");
+                            ui.same_line();
+                            fmt_text_colored!(ui, self.theme.value, "${:02X}", st.cpu_info.regs.y);
+                            ui.text_colored(self.theme.label, "FLAGS: ");
+                            for i in [
+                                Flag6502::C,
+                                Flag6502::Z,
+                                Flag6502::I,
+                                Flag6502::D,
+                                Flag6502::B,
+                                Flag6502::U,
+                                Flag6502::V,
+                                Flag6502::N,
+                            ] {
+                                ui.same_line();
+                                let s: &str = i.into();
+                                if i.reg_has(st.cpu_info.regs.sr) {
+                                    ui.text_colored(self.theme.signal_high, s);
+                                } else {
+                                    ui.text_colored(self.theme.signal_low, s);
+                                }
                             }
-                        }
-                        ui.separator();
-                        ui.text_colored(self.theme.label, "Cycles left: ");
-                        ui.same_line();
-                        fmt_text_colored!(ui, self.theme.value, "{}", st.cpu_info.cycles_left);
-                        ui.text_colored(self.theme.label, "Cycle counter: ");
-                        ui.same_line();
-                        fmt_text_colored!(ui, self.theme.value, "{}", st.cpu_info.global);
-                        f.pop();
-                    });
-            });
+                            ui.separator();
+                            ui.text_colored(self.theme.label, "Cycles left: ");
+                            ui.same_line();
+                            fmt_text_colored!(ui, self.theme.value, "{}", st.cpu_info.cycles_left);
+                            ui.text_colored(self.theme.label, "Cycle counter: ");
+                            ui.same_line();
+                            fmt_text_colored!(ui, self.theme.value, "{}", st.cpu_info.global);
+                            f.pop();
+                        });
+                });
 
-        ui.window("Memory")
-            .position(dims.position_lower(), imgui::Condition::Always)
-            .size(dims.size_lower(), imgui::Condition::Always)
-            .flags(panel_flag)
-            .build(|| {
-                window_memory::update(
-                    ui,
-                    &dims,
-                    &self.theme,
-                    &self.fonts,
-                    &mut self.options,
-                    &mut self.addr_memedit_buffer,
-                    &mut self.text_buffer,
-                    &mut st,
-                );
-            });
-        ui.window("Disassemble")
-            .position(dims.position_right_lower(), imgui::Condition::Always)
-            .size(dims.size_right_lower(), imgui::Condition::Always)
-            .flags(panel_flag)
-            .build(|| {
-                window_dissasm::update(
-                    ui,
-                    &dims,
-                    &self.theme,
-                    &self.fonts,
-                    &mut self.options,
-                    &mut self.addr_disassm_buffer,
-                    &mut self.text_buffer,
-                    &mut st,
-                )
-            });
-
+            ui.window("Memory")
+                .position(dims.position_lower(), imgui::Condition::Always)
+                .size(dims.size_lower(), imgui::Condition::Always)
+                .flags(panel_flag)
+                .build(|| {
+                    window_memory::update(
+                        ui,
+                        &dims,
+                        &self.theme,
+                        &self.fonts,
+                        &mut self.options,
+                        &mut self.addr_memedit_buffer,
+                        &mut self.text_buffer,
+                        &mut self.mod_memedit_buffer,
+                        &mut st,
+                    );
+                });
+            ui.window("Disassemble")
+                .position(dims.position_right_lower(), imgui::Condition::Always)
+                .size(dims.size_right_lower(), imgui::Condition::Always)
+                .flags(panel_flag)
+                .build(|| {
+                    window_dissasm::update(
+                        ui,
+                        &dims,
+                        &self.theme,
+                        &self.fonts,
+                        &mut self.options,
+                        &mut self.addr_disassm_buffer,
+                        &mut self.text_buffer,
+                        &mut st,
+                    )
+                });
+        }
         let mut d = self.raylib.handle.begin_drawing(&self.raylib.thread);
         d.clear_background(raylib::prelude::Color::DARKGRAY);
         self.renderer.render(&mut self.ctx, &mut d);
