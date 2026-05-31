@@ -192,10 +192,10 @@ impl BusCpu {
                                 })
                             }
                             0x4016 => Ok(HardwareIntercept {
-                                event: NesEvent::ControllerWrittenTo(addr),
+                                event: NesEvent::ControllerWrittenTo,
                                 debug_simulated_target: get_simulated!(addr),
                             }),
-                            _ => Err(BusCpuError::AddrRangeNotImplemented(input_addr)),
+                            _ => Ok(Memory(&mut self.open_bus_sim_reg)),
                         };
                     } else {
                         return match addr {
@@ -211,14 +211,14 @@ impl BusCpu {
                                 event: NesEvent::ControllerReadFrom(addr),
                                 debug_simulated_target: get_simulated!(addr),
                             }),
-                            _ => Err(BusCpuError::AddrRangeNotImplemented(input_addr)),
+                            _ => Ok(Memory(&mut self.open_bus_sim_reg)),
                         };
                     }
                 }
 
                 Ok(Memory(get_simulated!(addr)))
             }
-            _ => Err(BusCpuError::AddrRangeNotImplemented(input_addr)),
+            _ => Ok(Memory(&mut self.open_bus_sim_reg)),
         }
     }
 

@@ -3,10 +3,7 @@ use std::fmt::Write;
 use imgui::{FontId, StyleColor, StyleVar, WindowFlags, sys::ImGuiCond_FirstUseEver};
 use log::info;
 use raylib::{
-    RaylibHandle, RaylibThread,
-    color::Color,
-    drawing::{RaylibDraw, RaylibTextureModeExt},
-    texture::{RaylibRenderTexture2D, RaylibTexture2D, RenderTexture2D},
+    RaylibHandle, RaylibThread, audio::{AudioStream, RaylibAudio}, color::Color, drawing::{RaylibDraw, RaylibTextureModeExt}, ffi::{IsAudioStreamProcessed, LoadAudioStream, PlayAudioStream, UpdateAudioStream}, texture::{RaylibRenderTexture2D, RaylibTexture2D, RenderTexture2D}
 };
 use raylib_imgui_rs::Renderer;
 
@@ -110,6 +107,7 @@ struct RaylibInfo {
     game_texture: RenderTexture2D,
     chr_bank0: RenderTexture2D,
     chr_bank1: RenderTexture2D,
+    audio_stream: raylib::ffi::AudioStream,
 }
 
 impl RaylibInfo {
@@ -119,6 +117,7 @@ impl RaylibInfo {
         texture: RenderTexture2D, /*, screen_data: Vec<u8>*/
         c0: RenderTexture2D,
         c1: RenderTexture2D,
+        astream: raylib::ffi::AudioStream,
     ) -> Self {
         Self {
             handle,
@@ -126,6 +125,7 @@ impl RaylibInfo {
             game_texture: texture,
             chr_bank0: c0,
             chr_bank1: c1,
+            audio_stream: astream
         }
     }
 }
@@ -265,11 +265,17 @@ impl AppUI {
         screen.set_texture_filter(&thread, raylib::ffi::TextureFilter::TEXTURE_FILTER_POINT);
         c0.set_texture_filter(&thread, raylib::ffi::TextureFilter::TEXTURE_FILTER_POINT);
         c1.set_texture_filter(&thread, raylib::ffi::TextureFilter::TEXTURE_FILTER_POINT);
+
+        // Audio
+        let _ = RaylibAudio::init_audio_device().unwrap();
+        let audio = unsafe { LoadAudioStream(44100, 32, 1) };
+        unsafe { PlayAudioStream(audio) };
+
         Self {
             options: Options::default(),
             ctx,
             renderer,
-            raylib: RaylibInfo::new(rl, thread, screen, c0, c1),
+            raylib: RaylibInfo::new(rl, thread, screen, c0, c1, audio),
             dev_mode: true,
             text_buffer: String::with_capacity(128),
             addr_disassm_buffer: String::with_capacity(5),
@@ -313,7 +319,22 @@ impl AppUI {
                     .expect("Couldnt swap buffer");
             }
         }
-
+        // if unsafe { IsAudioStreamProcessed(self.raylib.audio_stream) } {
+    
+        //     // Ensure we actually have samples generated to give it
+        //     if !st.game_audio.data.is_empty() {
+        //         let sample_count = st.game_audio.data.len() as i32;
+                
+        //         unsafe {
+        //             UpdateAudioStream(
+        //                 self.raylib.audio_stream,
+        //                 st.game_audio.data.as_ptr() as *const std::ffi::c_void, // Clean cast instead of transmute
+        //                 sample_count, // Number of frames (1 sample = 1 frame in Mono)
+        //             );
+        //         }
+                
+        //     }
+        // }
         let ui = self.ctx.new_frame();
 
         ui.dockspace_over_main_viewport();

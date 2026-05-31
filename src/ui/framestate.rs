@@ -8,6 +8,11 @@ pub struct FrameState<'a> {
     pub dissasembly: Dissassebly<'a>,
     pub memory_editor: MemEdit<'a>,
     pub ppu_info: PpuInfo<'a>,
+    pub game_audio: Apu,
+}
+
+pub struct Apu {
+    // pub data: &'a [f32]
 }
 
 pub struct PpuInfo<'a> {

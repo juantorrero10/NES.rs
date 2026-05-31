@@ -15,7 +15,7 @@ use crate::{
     nes::{Nes, bus_cpu::BusCpu, instruction_set::Instruction6502},
     ui::{
         AppUI, Theme,
-        framestate::{Dissassebly, FrameState, GameScreen, MemEdit, PersistentFrameState, PpuInfo},
+        framestate::{Apu, Dissassebly, FrameState, GameScreen, MemEdit, PersistentFrameState, PpuInfo},
     },
 };
 
@@ -113,37 +113,38 @@ fn nes_loop(mut nes: Nes, mut ui: AppUI) -> Result<(), Box<dyn Error>> {
     let mut frame_updated = true;
     let mut step_frame = false;
 
+    // let mut audio = vec![0f32; 2048];
+    // let mut phase = 0.0f32;
+
     // It is a pointer+len pair because we can guarantee that this will be valid for ever.
     let (screen_ptr, screen_len) = nes.ppu.borrow().get_screen();
 
     while !ui.raylib_handle().window_should_close() {
         let t0 = Instant::now();
 
+
         match sim {
             RunMode::Sim => {
                 step_frame = true;
 
-                if ui.raylib_handle().is_key_pressed(KeyboardKey::KEY_SPACE) {
+                if ui.raylib_handle().is_key_pressed(KeyboardKey::KEY_TAB) {
                     sim = RunMode::Stopped;
                 }
             }
             RunMode::Stopped => {
-                if ui.raylib_handle().is_key_pressed(KeyboardKey::KEY_S) {
+                if ui.raylib_handle().is_key_pressed(KeyboardKey::KEY_DOWN) {
                     //log::info!("Pressed S!");
                     step_instruction = true;
                 }
 
-                if ui.raylib_handle().is_key_pressed(KeyboardKey::KEY_V) {
+                if ui.raylib_handle().is_key_pressed(KeyboardKey::KEY_P) {
                     step_frame = true;
-                } else if ui.raylib_handle().is_key_pressed(KeyboardKey::KEY_SPACE) {
+                } else if ui.raylib_handle().is_key_pressed(KeyboardKey::KEY_TAB) {
                     sim = RunMode::Sim;
                 }
             }
         }
 
-        if ui.raylib_handle().is_key_pressed(KeyboardKey::KEY_L) {
-            log ^= true;
-        }
         
         if ui.raylib_handle().is_key_pressed(KeyboardKey::KEY_R) {
             nes.reset()?;
@@ -151,6 +152,7 @@ fn nes_loop(mut nes: Nes, mut ui: AppUI) -> Result<(), Box<dyn Error>> {
 
         // Pressing V to jump a frame or Simulation Speed
         if step_frame {
+            nes.controller.borrow_mut().update_controller_status(ui.raylib_handle(), None);
             loop {
                 if log {
                     nes.clock(Some(&mut log_string))?;
@@ -254,6 +256,10 @@ fn nes_loop(mut nes: Nes, mut ui: AppUI) -> Result<(), Box<dyn Error>> {
                 text: &dissasembly,
                 mapping: &ins_mapping,
                 bkpt,
+            },
+            // Uploading the daat every frame
+            game_audio: Apu {
+                // data: audio.as_slice(),
             },
             ppu_info: PpuInfo {
                 chr_bank_0: chr_bank_0_canvas.as_slice(),

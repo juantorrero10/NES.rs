@@ -12,7 +12,7 @@ mod game_rom;
 pub mod instruction_set;
 mod mapper;
 mod ppu;
-mod controller;
+pub mod controller;
 mod apu;
 
 pub struct Nes {
@@ -52,7 +52,7 @@ impl Nes {
         )));
 
         let apu = Rc::new(RefCell::new(Apu{}));
-        let controller = Rc::new(RefCell::new(Controller{}));
+        let controller = Rc::new(RefCell::new(Controller::default()));
 
         let comms = NesComm {
             ppu: ppu.clone(),
@@ -137,7 +137,7 @@ enum NesEvent {
     PpuRegReadFrom(PpuRegister),
     OAMDMATransfer(*const u8, usize),
     ControllerReadFrom(u16),
-    ControllerWrittenTo(u16),
+    ControllerWrittenTo,
     ApuWrittenTo(u16),
     ApuReadFrom(u16),
 }
@@ -172,8 +172,8 @@ fn trigger_write_event(comm: &NesComm, e: NesEvent, data: u8) -> std::result::Re
         NesEvent::ApuWrittenTo(addr) => {
             Ok(comm.apu.borrow_mut().event_cpu_has_written(addr, data))
         }
-        NesEvent::ControllerWrittenTo(addr) => {
-            Ok(comm.controller.borrow_mut().event_cpu_has_written(addr, data))
+        NesEvent::ControllerWrittenTo => {
+            Ok(comm.controller.borrow_mut().event_cpu_has_written(data))
         }
         NesEvent::OAMDMATransfer(ptr, len) => {
             let slice = unsafe { std::slice::from_raw_parts(ptr, len) };

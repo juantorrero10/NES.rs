@@ -1,18 +1,14 @@
-use std::{cell::RefCell, rc::Rc};
-
-use raylib::ffi::GuiListViewProperty::SCROLLBAR_WIDTH;
 use thiserror::Error;
 
 use crate::{
-    bus,
     nes::{
-        NesEvent,
-        bus_cpu::{BusCpu, BusCpuError},
+        bus_cpu::{BusCpuError},
         game_rom::MemoryMirroring,
         mapper::PpuMapper,
     },
 };
 
+#[allow(unused)]
 pub const ADDR_CHR_START: u16 = 0x0000;
 pub const ADDR_CHR_END: u16 = 0x1FFF;
 
@@ -49,11 +45,11 @@ impl BusPpu {
         }
     }
 
-    fn resolve_addr(&mut self, addr: u16) -> &mut u8 {
+    fn resolve_addr(&mut self, addr: u16, write: bool) -> &mut u8 {
         let mut mapped_addr = addr & 0x3FFF;
         // Mapper only acts on CHR-ROM data
         if mapped_addr <= ADDR_NAME_END && self.mapper.need_intercept(addr) {
-            return self.mapper.intercept(addr, &mut self.chips, self.mirroring);
+            return self.mapper.intercept(addr, &mut self.chips, self.mirroring, write);
         }
         match mapped_addr {
             ADDR_NAME_START..=ADDR_NAME_END => {
@@ -103,12 +99,12 @@ impl BusPpu {
     }
     #[inline(always)]
     pub fn read(&mut self, addr: u16) -> u8 {
-        *self.resolve_addr(addr)
+        *self.resolve_addr(addr, false)
     }
 
     #[inline(always)]
     pub fn write(&mut self, addr: u16, data: u8) {
-        *self.resolve_addr(addr) = data;
+        *self.resolve_addr(addr, true) = data;
     }
 }
 
@@ -222,6 +218,7 @@ struct OAFlags {
 #[derive(Clone, Copy)]
 enum OAFFields {
     SpritePalIndex = 0x3,
+    #[allow(unused)]
     Unused = 0x1C,
     Priority = 0x20,
     HorizontalFlip = 0x40,
@@ -252,12 +249,6 @@ use ppu_flags::*;
 pub enum PpuError {
     #[error("Could not read/write to PPU registers on Cpu bus: {0}")]
     RegisterMemError(#[from] BusCpuError),
-
-    #[error("Address ${0:04X} inside region was not mirrored")]
-    AddrUnMirrored(u16),
-
-    #[error("Address ${0:04X} was not mapped to any device.")]
-    UnimplementedAddr(u16),
 }
 
 type Result<T> = std::result::Result<T, PpuError>;
@@ -280,7 +271,7 @@ impl Ppu {
                 if self.cycle == 1 {
                     self.status |= STATUS_VBLANK;
 
-                    if (self.ctrl & 0x80) != 0 {
+                    if (self.ctrl & CTRL_GENERATE_NMI) != 0 {
                         self.nmi_signal = true;
                     }
                 }
