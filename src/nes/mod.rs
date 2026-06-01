@@ -79,9 +79,13 @@ impl Nes {
 
     pub fn clock(&mut self, log: Option<&mut String>) -> Result<()> {
 
+        self.ppu.borrow_mut().frame_complete = false;
+        self.ppu.borrow_mut().clock();
+        self.ppu.borrow_mut().clock();
+        self.ppu.borrow_mut().clock();
         self.ppu_cpu_clock_frequency += 1;
 
-        if self.ppu_cpu_clock_frequency >= 3 {
+        if true{// self.ppu_cpu_clock_frequency >= 3 {
             self.ppu_cpu_clock_frequency = 0;
 
             // VBlank check 
@@ -104,8 +108,6 @@ impl Nes {
                 }
             }
         }
-
-        self.ppu.borrow_mut().clock();
         
         Ok(())
     }
