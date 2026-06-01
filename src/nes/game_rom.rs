@@ -6,7 +6,6 @@ const NES_MAGIC: u32 = 0x1a53454e; // "NES\x1a"
 pub struct GameROMArtifacts {
     pub cpu_mapper: Box<dyn CpuMapper>,
     pub ppu_mapper: Box<dyn PpuMapper>,
-    pub mirroring: MemoryMirroring,
 }
 
 #[repr(u8)]
@@ -97,12 +96,12 @@ pub fn load_rom(filepath: OsString) -> Result<GameROMArtifacts> {
         header.prg_ram_size as usize,
         prg_data,
         chr_data,
+        mirror
     )?;
 
     Ok(GameROMArtifacts {
         cpu_mapper,
         ppu_mapper,
-        mirroring: mirror
     })
 }
 
@@ -114,11 +113,12 @@ fn create_mappers(
     prg_ram_size: usize,
     prg_rom: Vec<u8>,
     chr_rom: Vec<u8>,
+    mirroring: MemoryMirroring
 ) -> Result<(Box<dyn CpuMapper>, Box<dyn PpuMapper>)> {
     match mapper_id {
         0 => Ok({
             let cpum = Box::new(CpuMapper0::new(prg_rom, prg_banks, prg_ram_size));
-            let ppum = Box::new(PpuMapper0::new(chr_rom));
+            let ppum = Box::new(PpuMapper0::new(chr_rom, mirroring));
             (cpum, ppum)
         }),
         _ => Err(MapperNotImplemented(mapper_id)),

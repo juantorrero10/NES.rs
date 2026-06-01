@@ -24,9 +24,10 @@ pub trait PpuMapper {
         &'a mut self,
         addr: u16,
         chips: &'a mut BusPpuChips,
-        mirroring: MemoryMirroring,
         write: bool,
     ) -> &'a mut u8;
+
+    fn mirroring(&self) -> MemoryMirroring;
 }
 
 macro_rules! rom {
@@ -58,6 +59,7 @@ pub struct CpuMapper0 {
 pub struct PpuMapper0 {
     open_bus_sim: u8,
     chr_rom: Vec<u8>,
+    mirroring: MemoryMirroring,
 }
 
 
@@ -97,8 +99,8 @@ impl CpuMapper for CpuMapper0 {
 }
 
 impl PpuMapper0 {
-    pub fn new(chr_rom: Vec<u8>) -> Self {
-        PpuMapper0 { chr_rom, open_bus_sim: 0 }
+    pub fn new(chr_rom: Vec<u8>, mirroring: MemoryMirroring) -> Self {
+        PpuMapper0 { chr_rom, open_bus_sim: 0, mirroring}
     }
 }
 
@@ -110,9 +112,12 @@ impl PpuMapper for PpuMapper0 {
         &'a mut self,
         addr: u16,
         _: &'a mut BusPpuChips,
-        _: MemoryMirroring,
         write: bool,
     ) -> &'a mut u8 {
         ppu_rom!(self, write, &mut self.chr_rom[addr as usize])
+    }
+
+    fn mirroring(&self) -> MemoryMirroring {
+        self.mirroring
     }
 }

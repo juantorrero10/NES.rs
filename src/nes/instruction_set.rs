@@ -1,31 +1,31 @@
-use std::{cell::RefMut, fmt::Write};
+use std::{error::Error, fmt::Write};
 
 use thiserror::Error;
 
 use crate::nes::{
-    bus_cpu::{BusCpu, BusCpuError},
-    cpu::{Cpu, CpuError},
-    instruction_set::addressing::AddrMode,
+    Nes, NesError, bus_cpu::{BusCpu, BusCpuError}, cpu::{Cpu, CpuError}, instruction_set::addressing::AddrMode
 };
 
-#[derive(Error, Debug)]
+/*#[derive(Error, Debug)]
 pub enum InstructionError {
+    #[error("Could not read/write: {0}")]
+    IOoperationFailed(#[from] NesError),
     #[error("CPU fail: {0}")]
     CpuError(#[from] CpuError),
     #[error("Bus fail: {0}")]
     BusCpuError(#[from] BusCpuError),
     #[error("FMT error: {0}")]
     FmtError(#[from] std::fmt::Error),
-}
+}*/
 
-type Result<T> = std::result::Result<T, InstructionError>;
+type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
 #[derive(Clone, Copy)]
 pub struct Instruction6502 {
     pub n_cycles: u8,
     pub pneumonic: &'static str,
     pub addressing_handler: addressing::AddrMode,
-    pub instruction_handler: fn(&mut Cpu) -> Result<bool>,
+    pub instruction_handler: fn(&mut Cpu, &mut Nes) -> Result<bool>,
 }
 
 const DEF: Instruction6502 = Instruction6502 {
@@ -67,64 +67,64 @@ impl Instruction6502 {
     fn fmt_push_args(
         arg_start: u16,
         a: AddrMode,
-        bus: &mut BusCpu,
+        nes: &mut Nes,
         out: &mut String,
     ) -> Result<()> {
         match a {
             IMM => {
-                let imm = bus.debug_read(arg_start)?;
+                let imm = nes.debug_read(arg_start)?;
                 write!(out, "#{}", imm)?;
                 Ok(())
             }
             ABS => {
-                let addr = bus.debug_read16(arg_start)?;
+                let addr = nes.debug_read16(arg_start)?;
                 write!(out, "${:04X}", addr)?;
                 Ok(())
             }
             REL => {
-                let addr = bus.debug_read(arg_start)? as i8 as i16;
+                let addr = nes.debug_read(arg_start)? as i8 as i16;
                 let sum = arg_start.wrapping_add(1);
                 let addr: u16 = sum.wrapping_add_signed(addr);
                 write!(out, "${:04X}", addr)?;
                 Ok(())
             }
             ABX => {
-                let addr = bus.debug_read16(arg_start)?;
+                let addr = nes.debug_read16(arg_start)?;
                 write!(out, "${:04X}, X", addr)?;
                 Ok(())
             }
             ABY => {
-                let addr = bus.debug_read16(arg_start)?;
+                let addr = nes.debug_read16(arg_start)?;
                 write!(out, "${:04X}, Y", addr)?;
                 Ok(())
             }
             ZP0 => {
-                let addr = bus.debug_read(arg_start)? as u16;
+                let addr = nes.debug_read(arg_start)? as u16;
                 write!(out, "${:04X}", addr)?;
                 Ok(())
             }
             ZPX => {
-                let addr = bus.debug_read(arg_start)? as u16;
+                let addr = nes.debug_read(arg_start)? as u16;
                 write!(out, "${:04X}, X", addr)?;
                 Ok(())
             }
             ZPY => {
-                let addr = bus.debug_read(arg_start)? as u16;
+                let addr = nes.debug_read(arg_start)? as u16;
                 write!(out, "${:04X}, Y", addr)?;
                 Ok(())
             }
             IND => {
-                let addr = bus.debug_read16(arg_start)?;
+                let addr = nes.debug_read16(arg_start)?;
                 write!(out, "(${:04X})", addr)?;
                 Ok(())
             }
             IZX => {
-                let addr = bus.debug_read(arg_start)? as u16;
+                let addr = nes.debug_read(arg_start)? as u16;
                 write!(out, "(${:04X}, X)", addr)?;
                 Ok(())
             }
             IZY => {
-                let addr = bus.debug_read(arg_start)? as u16;
+                let addr = nes.debug_read(arg_start)? as u16;
                 write!(out, "(${:04X}), Y", addr)?;
                 Ok(())
             }
@@ -132,14 +132,14 @@ impl Instruction6502 {
         }
     }
 
-    pub fn dissasemble(ip: u16, bus: &mut BusCpu, out: &mut String) -> Result<usize> {
+    pub fn dissasemble(ip: u16, nes: &mut Nes, out: &mut String) -> Result<usize> {
         write!(out, "${:04X}:   ", ip)?;
-        let opcode = bus.debug_read(ip)?;
+        let opcode = nes.debug_read(ip)?;
         write!(out, "{:02X}", opcode)?;
         let extra = Self::get_size(opcode) - 1;
         for i in 0..2 {
             if i < extra
-                && let Ok(b) = bus.debug_read(ip.wrapping_add(1) + (i as u16))
+                && let Ok(b) = nes.debug_read(ip.wrapping_add(1) + (i as u16))
             {
                 write!(out, " {:02X}", b)?;
             } else {
@@ -150,17 +150,18 @@ impl Instruction6502 {
         Self::fmt_push_args(
             ip.wrapping_add(1),
             INSTRUCTION_LUT[opcode as usize].addressing_handler,
-            bus,
+            nes,
             out,
         )?;
         out.push('\n');
         Ok(extra + 1)
     }
 
+    /*
     fn fmt_push_args_nestest_log(
         arg_start: u16,
         a: AddrMode,
-        mut bus: RefMut<'_, BusCpu>,
+        bus: &mut BusCpu,
         out: &mut String,
     ) -> Result<()> {
         match a {
@@ -225,7 +226,7 @@ impl Instruction6502 {
         }
     }
 
-    pub fn dissasemble_nestest_log(ip: u16, mut bus: RefMut<'_, BusCpu>, out: &mut String) -> Result<usize> {
+    pub fn dissasemble_nestest_log(ip: u16, bus: &mut BusCpu, out: &mut String) -> Result<usize> {
         write!(out, "{:04X}  ", ip)?;
         let opcode = bus.debug_read(ip)?;
         write!(out, "{:02X}", opcode)?;
@@ -250,7 +251,7 @@ impl Instruction6502 {
         let diff = 34 - (out.len() - diff);
         (0..diff).for_each(|_| out.push(' '));
         Ok(extra + 1)
-    }
+    }*/
 }
 
 use addressing::AddrMode::*;
@@ -486,10 +487,10 @@ pub static INSTRUCTION_LUT: [Instruction6502; 256] = {
 };
 
 macro_rules! handler {
-    ($fn_name:ident, $c:ident, $body:block) => {
+    ($fn_name:ident, $c:ident, $b:ident, $body:block) => {
         #[inline(always)]
         #[allow(unused)]
-        pub fn $fn_name($c: &mut Cpu) -> Result<bool> {
+        pub fn $fn_name($c: &mut Cpu, $b: &mut Nes) -> Result<bool> {
             $body
         }
     };
@@ -497,7 +498,6 @@ macro_rules! handler {
 
 pub mod addressing {
     use super::*;
-    use crate::bus;
 
     #[derive(Clone, Copy, PartialEq, Eq)]
     pub enum AddrMode {
@@ -516,7 +516,7 @@ pub mod addressing {
     }
 
     impl AddrMode {
-        pub fn get_fptr(&self) -> fn(&mut Cpu) -> Result<bool> {
+        pub fn get_fptr(&self) -> fn(&mut Cpu, &mut Nes) -> Result<bool> {
             match self {
                 Self::IMM => imm,
                 Self::IMP => imp,
@@ -534,25 +534,25 @@ pub mod addressing {
         }
     }
 
-    handler!(imp, c, {
+    handler!(imp, c, bus, {
         c.state.fetched = c.registers.a;
         Ok(false)
     });
 
-    handler!(imm, c, {
+    handler!(imm, c, bus, {
         c.state.addr_abs = c.registers.pc;
         c.registers.pc += 1;
         Ok(false)
     });
 
-    handler!(abs, c, {
-        c.state.addr_abs = bus!(c).read16(c.registers.pc)?;
+    handler!(abs, c, bus, {
+        c.state.addr_abs = bus.read16(c.registers.pc)?;
         c.registers.pc += 2;
         Ok(false)
     });
 
-    handler!(rel, c, {
-        c.state.addr_rel = bus!(c).read(c.registers.pc)? as i8 as i16;
+    handler!(rel, c, bus, {
+        c.state.addr_rel = bus.read(c.registers.pc)? as i8 as i16;
         c.registers.pc += 1;
         c.state.addr_abs = c.registers.pc.wrapping_add_signed(c.state.addr_rel);
         // Add 1 CPU cycle if boundary crossed
@@ -562,28 +562,28 @@ pub mod addressing {
         Ok(false)
     });
 
-    handler!(ind, c, {
-        let ptr = bus!(c).read16(c.registers.pc)?;
+    handler!(ind, c, bus, {
+        let ptr = bus.read16(c.registers.pc)?;
         c.registers.pc += 2;
         // Simulate 6502 page boundary bug
         // This behaviour is incorrect on purpose
         if (ptr & 0x00FF) == 0x00FF {
             let addr_hi = {
-                ((bus!(c).read(ptr & 0xFF00)? as u16) << 8)
+                ((bus.read(ptr & 0xFF00)? as u16) << 8)
             };
             let addr_lo = {
-                bus!(c).read(ptr)? as u16
+                bus.read(ptr)? as u16
             };
             c.state.addr_abs = addr_hi | addr_lo;
         } else {
             // Correct behaviour
-            c.state.addr_abs = bus!(c).read16(ptr)?;
+            c.state.addr_abs = bus.read16(ptr)?;
         }
         Ok(false)
     });
 
-    handler!(abx, c, {
-        c.state.addr_abs = bus!(c).read16(c.registers.pc)?;
+    handler!(abx, c, bus, {
+        c.state.addr_abs = bus.read16(c.registers.pc)?;
         c.registers.pc += 2;
         let old_page = c.state.addr_abs >> 8;
         c.state.addr_abs += c.registers.x as u16;
@@ -594,8 +594,8 @@ pub mod addressing {
         Ok(false)
     });
 
-    handler!(aby, c, {
-        c.state.addr_abs = bus!(c).read16(c.registers.pc)?;
+    handler!(aby, c, bus, {
+        c.state.addr_abs = bus.read16(c.registers.pc)?;
         c.registers.pc += 2;
         let old_page = c.state.addr_abs >> 8;
         c.state.addr_abs += c.registers.y as u16;
@@ -606,42 +606,42 @@ pub mod addressing {
         Ok(false)
     });
 
-    handler!(zp0, c, {
-        c.state.addr_abs = bus!(c).read(c.registers.pc)? as u16;
+    handler!(zp0, c, bus, {
+        c.state.addr_abs = bus.read(c.registers.pc)? as u16;
         c.registers.pc += 1;
         c.state.addr_abs &= 0x00FF;
         Ok(false)
     });
 
-    handler!(zpx, c, {
-        c.state.addr_abs = (bus!(c).read(c.registers.pc)? + c.registers.x) as u16;
+    handler!(zpx, c, bus, {
+        c.state.addr_abs = (bus.read(c.registers.pc)? + c.registers.x) as u16;
         c.registers.pc += 1;
         c.state.addr_abs &= 0x00FF;
         Ok(false)
     });
 
-    handler!(zpy, c, {
-        c.state.addr_abs = (bus!(c).read(c.registers.pc)? + c.registers.y) as u16;
+    handler!(zpy, c, bus, {
+        c.state.addr_abs = (bus.read(c.registers.pc)? + c.registers.y) as u16;
         c.registers.pc += 1;
         c.state.addr_abs &= 0x00FF;
         Ok(false)
     });
 
-    handler!(izx, c, {
-        let ptr = (bus!(c).read(c.registers.pc)? + c.registers.x) as u16;
+    handler!(izx, c, bus, {
+        let ptr = (bus.read(c.registers.pc)? + c.registers.x) as u16;
         c.registers.pc += 1;
-        let lo = bus!(c).read(ptr & 0x00FF)? as u16;
-        let hi = bus!(c).read((ptr + 1) & 0x00FF)? as u16;
+        let lo = bus.read(ptr & 0x00FF)? as u16;
+        let hi = bus.read((ptr + 1) & 0x00FF)? as u16;
 
         c.state.addr_abs = (hi << 8) | lo;
         Ok(false)
     });
 
-    handler!(izy, c, {
-        let ptr = bus!(c).read(c.registers.pc)? as u16;
+    handler!(izy, c, bus, {
+        let ptr = bus.read(c.registers.pc)? as u16;
         c.registers.pc += 1;
-        let lo = bus!(c).read(ptr & 0x00FF)? as u16;
-        let hi = bus!(c).read((ptr + 1) & 0x00FF)? as u16;
+        let lo = bus.read(ptr & 0x00FF)? as u16;
+        let hi = bus.read((ptr + 1) & 0x00FF)? as u16;
 
         c.state.addr_abs = (hi << 8) | lo;
         let old_page = c.state.addr_abs >> 8;
@@ -655,45 +655,45 @@ pub mod addressing {
 
 pub mod instructions {
 
-    use crate::{bus, nes::cpu::Flag6502::{self, C}};
+    use crate::{nes::cpu::Flag6502::{self}};
 
     use super::*;
 
-    pub fn nop(c: &mut Cpu) -> Result<bool> {
+    pub fn nop(c: &mut Cpu, _: &mut Nes) -> Result<bool> {
         match c.state.last_opcode {
             0x1C | 0x3C | 0x5C | 0x7C | 0xDC | 0xFC => Ok(true),
             _ => Ok(false),
         }
     }
 
-    pub fn ldx(c: &mut Cpu) -> Result<bool> {
-        c.registers.x = bus!(c).read(c.state.addr_abs)?;
+    pub fn ldx(c: &mut Cpu, bus: &mut Nes) -> Result<bool> {
+        c.registers.x = bus.read(c.state.addr_abs)?;
         c.set_flag(Flag6502::Z, c.registers.x == 0);
         c.set_flag(Flag6502::N, (c.registers.x & 0x80) != 0);
         Ok(true)
     }
 
-    handler!(ldy, c, {
-        c.registers.y = bus!(c).read(c.state.addr_abs)?;
+    handler!(ldy, c, bus, {
+        c.registers.y = bus.read(c.state.addr_abs)?;
         c.set_flag(Flag6502::Z, c.registers.y == 0);
         c.set_flag(Flag6502::N, (c.registers.y & 0x80) != 0);
         Ok(true)
     });
 
-    handler!(lda, c, {
-        c.registers.a = bus!(c).read(c.state.addr_abs)?;
+    handler!(lda, c, bus, {
+        c.registers.a = bus.read(c.state.addr_abs)?;
         c.set_flag(Flag6502::Z, c.registers.a == 0);
         c.set_flag(Flag6502::N, (c.registers.a & 0x80) != 0);
         Ok(true)
     });
 
-    handler!(stx, c, {
-        bus!(c).write(c.state.addr_abs, c.registers.x)?;
+    handler!(stx, c, bus, {
+        bus.write(c.state.addr_abs, c.registers.x)?;
         Ok(false)
     });
 
-    handler!(adc, c, {
-        let b = bus!(c).read(c.state.addr_abs)? as u16;
+    handler!(adc, c, bus, {
+        let b = bus.read(c.state.addr_abs)? as u16;
         let result: u16 = c.registers.a as u16 + b + c.get_flag(Flag6502::C) as u16;
         c.set_flag(Flag6502::C, result > 0xFF);
         c.set_flag(Flag6502::Z, (result & 0x00FF) == 0);
@@ -706,16 +706,16 @@ pub mod instructions {
         Ok(true)
     });
 
-    handler!(and, c, {
-        let mem = bus!(c).read(c.state.addr_abs)?;
+    handler!(and, c, bus, {
+        let mem = bus.read(c.state.addr_abs)?;
         c.registers.a &= mem;
         c.set_flag(Flag6502::Z, c.registers.a == 0);
         c.set_flag(Flag6502::N, (c.registers.a & 0x80) != 0);
         Ok(true)
     });
 
-    handler!(asl, c, {
-        c.fetch();
+    handler!(asl, c, bus, {
+        c.fetch(bus);
         c.set_flag(Flag6502::C, c.state.fetched > 0x7F);
         let result: u8 = c.state.fetched << 1;
         c.set_flag(Flag6502::N, result > 0x7F);
@@ -723,12 +723,12 @@ pub mod instructions {
         if INSTRUCTION_LUT[c.state.last_opcode as usize].addressing_handler == IMP {
             c.registers.a = result;
         } else {
-            bus!(c).write(c.state.addr_abs, result)?;
+            bus.write(c.state.addr_abs, result)?;
         }
         Ok(false)
     });
 
-    handler!(bcc, c, {
+    handler!(bcc, c, bus, {
         if c.get_flag(Flag6502::C) {
             return Ok(false);
         }
@@ -737,7 +737,7 @@ pub mod instructions {
         Ok(true)
     });
 
-    handler!(bcs, c, {
+    handler!(bcs, c, bus, {
         if !c.get_flag(Flag6502::C) {
             return Ok(false);
         }
@@ -746,7 +746,7 @@ pub mod instructions {
         Ok(true)
     });
 
-    handler!(beq, c, {
+    handler!(beq, c, bus, {
         if !c.get_flag(Flag6502::Z) {
             return Ok(false);
         }
@@ -755,7 +755,7 @@ pub mod instructions {
         Ok(true)
     });
 
-    handler!(bne, c, {
+    handler!(bne, c, bus, {
         if c.get_flag(Flag6502::Z) {
             return Ok(false);
         }
@@ -764,7 +764,7 @@ pub mod instructions {
         Ok(true)
     });
 
-    handler!(bpl, c, {
+    handler!(bpl, c, bus, {
         if c.get_flag(Flag6502::N) {
             return Ok(false);
         }
@@ -773,7 +773,7 @@ pub mod instructions {
         Ok(true)
     });
 
-    handler!(bmi, c, {
+    handler!(bmi, c, bus, {
         if !c.get_flag(Flag6502::N) {
             return Ok(false);
         }
@@ -782,7 +782,7 @@ pub mod instructions {
         Ok(true)
     });
 
-    handler!(bvc, c, {
+    handler!(bvc, c, bus, {
         if c.get_flag(Flag6502::V) {
             return Ok(false);
         }
@@ -791,7 +791,7 @@ pub mod instructions {
         Ok(true)
     });
 
-    handler!(bvs, c, {
+    handler!(bvs, c, bus, {
         if !c.get_flag(Flag6502::V) {
             return Ok(false);
         }
@@ -800,47 +800,47 @@ pub mod instructions {
         Ok(true)
     });
 
-    handler!(bit, c, {
-        let mem = bus!(c).read(c.state.addr_abs)?;
+    handler!(bit, c, bus, {
+        let mem = bus.read(c.state.addr_abs)?;
         c.set_flag(Flag6502::Z, (c.registers.a & mem) == 0);
         c.set_flag(Flag6502::V, (mem & 0x40) != 0);
         c.set_flag(Flag6502::N, (mem & 0x80) != 0);
         Ok(false)
     });
 
-    handler!(brk, c, {
+    handler!(brk, c, bus, {
         let p = c.registers.pc + 2;
-        c.push(((p & 0xFF00) >> 8) as u8);
-        c.push((p & 0x00FF) as u8);
+        c.push(((p & 0xFF00) >> 8) as u8, bus);
+        c.push((p & 0x00FF) as u8, bus);
         c.set_flag(Flag6502::I, true);
         c.set_flag(Flag6502::B, true);
-        c.push(c.registers.sr);
-        c.registers.pc = bus!(c).read16(0xFFFE)?;
+        c.push(c.registers.sr, bus);
+        c.registers.pc = bus.read16(0xFFFE)?;
         Ok(false)
     });
 
-    handler!(clc, c, {
+    handler!(clc, c, bus, {
         c.set_flag(Flag6502::C, false);
         Ok(false)
     });
 
-    handler!(cld, c, {
+    handler!(cld, c, bus, {
         c.set_flag(Flag6502::D, false);
         Ok(false)
     });
 
-    handler!(cli, c, {
+    handler!(cli, c, bus, {
         c.set_flag(Flag6502::I, false);
         Ok(false)
     });
 
-    handler!(clv, c, {
+    handler!(clv, c, bus, {
         c.set_flag(Flag6502::V, false);
         Ok(false)
     });
 
-    handler!(cmp, c, {
-        let mem: u8 = bus!(c).read(c.state.addr_abs)?;
+    handler!(cmp, c, bus, {
+        let mem: u8 = bus.read(c.state.addr_abs)?;
         let result = c.registers.a.wrapping_sub(mem);
         c.set_flag(Flag6502::C, c.registers.a >= mem);
         c.set_flag(Flag6502::Z, result == 0);
@@ -848,8 +848,8 @@ pub mod instructions {
         Ok(true)
     });
 
-    handler!(cpx, c, {
-        let mem: u8 = bus!(c).read(c.state.addr_abs)?;
+    handler!(cpx, c, bus, {
+        let mem: u8 = bus.read(c.state.addr_abs)?;
         let result = c.registers.x.wrapping_sub(mem);
         c.set_flag(Flag6502::C, c.registers.x >= mem);
         c.set_flag(Flag6502::Z, result == 0);
@@ -857,8 +857,8 @@ pub mod instructions {
         Ok(false)
     });
 
-    handler!(cpy, c, {
-        let mem: u8 = bus!(c).read(c.state.addr_abs)?;
+    handler!(cpy, c, bus, {
+        let mem: u8 = bus.read(c.state.addr_abs)?;
         let result = c.registers.y.wrapping_sub(mem);
         c.set_flag(Flag6502::C, c.registers.y >= mem);
         c.set_flag(Flag6502::Z, result == 0);
@@ -866,72 +866,72 @@ pub mod instructions {
         Ok(false)
     });
 
-    handler!(dec, c, {
-        let mem = bus!(c).read(c.state.addr_abs)? - 1;
-        bus!(c).write(c.state.addr_abs, mem)?;
+    handler!(dec, c, bus, {
+        let mem = bus.read(c.state.addr_abs)? - 1;
+        bus.write(c.state.addr_abs, mem)?;
         c.set_flag(Flag6502::Z, mem == 0);
         c.set_flag(Flag6502::N, (mem & 0x80) != 0);
         Ok(false)
     });
 
-    handler!(dex, c, {
+    handler!(dex, c, bus, {
         c.registers.x -= 1;
         c.set_flag(Flag6502::Z, c.registers.x == 0);
         c.set_flag(Flag6502::N, (c.registers.x & 0x80) != 0);
         Ok(false)
     });
 
-    handler!(dey, c, {
+    handler!(dey, c, bus, {
         c.registers.y -= 1;
         c.set_flag(Flag6502::Z, c.registers.y == 0);
         c.set_flag(Flag6502::N, (c.registers.y & 0x80) != 0);
         Ok(false)
     });
 
-    handler!(eor, c, {
-        c.registers.a ^= bus!(c).read(c.state.addr_abs)?;
+    handler!(eor, c, bus, {
+        c.registers.a ^= bus.read(c.state.addr_abs)?;
         c.set_flag(Flag6502::Z, c.registers.a == 0);
         c.set_flag(Flag6502::N, (c.registers.a & 0x80) != 0);
         Ok(true)
     });
 
-    handler!(inc, c, {
-        let mem = bus!(c).read(c.state.addr_abs)? + 1;
-        bus!(c).write(c.state.addr_abs, mem)?;
+    handler!(inc, c, bus, {
+        let mem = bus.read(c.state.addr_abs)? + 1;
+        bus.write(c.state.addr_abs, mem)?;
         c.set_flag(Flag6502::Z, mem == 0);
         c.set_flag(Flag6502::N, (mem & 0x80) != 0);
         Ok(false)
     });
 
-    handler!(inx, c, {
+    handler!(inx, c, bus, {
         c.registers.x += 1;
         c.set_flag(Flag6502::Z, c.registers.x == 0);
         c.set_flag(Flag6502::N, (c.registers.x & 0x80) != 0);
         Ok(false)
     });
 
-    handler!(iny, c, {
+    handler!(iny, c, bus, {
         c.registers.y += 1;
         c.set_flag(Flag6502::Z, c.registers.y == 0);
         c.set_flag(Flag6502::N, (c.registers.y & 0x80) != 0);
         Ok(false)
     });
 
-    handler!(jmp, c, {
+    handler!(jmp, c, bus, {
         c.registers.pc = c.state.addr_abs;
         Ok(false)
     });
 
-    handler!(jsr, c, {
+    handler!(jsr, c, bus, {
         c.registers.pc -= 1;
-        c.push(((c.registers.pc & 0xFF00) >> 8) as u8);
-        c.push((c.registers.pc & 0x00FF) as u8);
+        c.push(((c.registers.pc & 0xFF00) >> 8) as u8, bus);
+        c.push((c.registers.pc & 0x00FF) as u8, bus);
         c.registers.pc = c.state.addr_abs;
         Ok(false)
     });
 
-    handler!(lsr, c, {
-        c.fetch();
+    handler!(lsr, c, bus, {
+        c.fetch(bus);
         c.set_flag(Flag6502::C, (c.state.fetched & 1) != 0);
         let result: u8 = c.state.fetched >> 1;
         c.set_flag(Flag6502::Z, result == 0);
@@ -939,38 +939,38 @@ pub mod instructions {
         if INSTRUCTION_LUT[c.state.last_opcode as usize].addressing_handler == IMP {
             c.registers.a = result;
         } else {
-            bus!(c).write(c.state.addr_abs, result)?;
+            bus.write(c.state.addr_abs, result)?;
         }
         Ok(false)
     });
 
-    handler!(ora, c, {
-        c.registers.a |= bus!(c).read(c.state.addr_abs)?;
+    handler!(ora, c, bus, {
+        c.registers.a |= bus.read(c.state.addr_abs)?;
         c.set_flag(Flag6502::Z, c.registers.a == 0);
         c.set_flag(Flag6502::N, (c.registers.a & 0x80) != 0);
         Ok(true)
     });
 
-    handler!(pha, c, {
-        c.push(c.registers.a)?;
+    handler!(pha, c, bus, {
+        c.push(c.registers.a, bus);
         Ok(false)
     });
 
-    handler!(php, c, {
+    handler!(php, c, bus, {
         let sr = c.registers.sr | Flag6502::B as u8 | Flag6502::U as u8;
-        c.push(sr)?;
+        c.push(sr, bus);
         Ok(false)
     });
 
-    handler!(pla, c, {
-        c.registers.a = c.pull()?;
+    handler!(pla, c, bus, {
+        c.registers.a = c.pull(bus);
         c.set_flag(Flag6502::Z, c.registers.a == 0);
         c.set_flag(Flag6502::N, (c.registers.a & 0x80) != 0);
         Ok(false)
     });
 
-    handler!(plp, c, {
-        let mut pulled = c.pull()?;
+    handler!(plp, c, bus, {
+        let mut pulled = c.pull(bus);
         let og_b = c.get_flag(Flag6502::B);
         c.registers.sr = pulled;
         c.set_flag(Flag6502::B, og_b);
@@ -978,8 +978,8 @@ pub mod instructions {
         Ok(false)
     });
 
-    handler!(rol, c, {
-        c.fetch();
+    handler!(rol, c, bus, {
+        c.fetch(bus);
         let result: u8 = c.state.fetched << 1 | c.get_flag(Flag6502::C) as u8;
         c.set_flag(Flag6502::C, c.state.fetched > 0x7F);
         c.set_flag(Flag6502::Z, result == 0);
@@ -987,13 +987,13 @@ pub mod instructions {
         if INSTRUCTION_LUT[c.state.last_opcode as usize].addressing_handler == IMP {
             c.registers.a = result;
         } else {
-            bus!(c).write(c.state.addr_abs, result)?;
+            bus.write(c.state.addr_abs, result)?;
         }
         Ok(false)
     });
 
-    handler!(ror, c, {
-        c.fetch();
+    handler!(ror, c, bus, {
+        c.fetch(bus);
         let result: u8 = (c.get_flag(Flag6502::C) as u8) << 7 | c.state.fetched >> 1;
         c.set_flag(Flag6502::C, (c.state.fetched & 1) != 0);
         c.set_flag(Flag6502::Z, result == 0);
@@ -1001,28 +1001,28 @@ pub mod instructions {
         if INSTRUCTION_LUT[c.state.last_opcode as usize].addressing_handler == IMP {
             c.registers.a = result;
         } else {
-            bus!(c).write(c.state.addr_abs, result)?;
+            bus.write(c.state.addr_abs, result)?;
         }
         Ok(false)
     });
 
-    handler!(rti, c, {
-        let mut sr = c.pull()?;
+    handler!(rti, c, bus, {
+        let mut sr = c.pull(bus);
         sr &= !(Flag6502::B as u8);
         sr |= Flag6502::U as u8;
         c.registers.sr = sr;
-        c.registers.pc = c.pull()? as u16 | (c.pull()? as u16) << 8;
+        c.registers.pc = c.pull(bus) as u16 | (c.pull(bus) as u16) << 8;
         Ok(false)
     });
 
-    handler!(rts, c, {
-        c.registers.pc = c.pull()? as u16 | (c.pull()? as u16) << 8;
+    handler!(rts, c, bus, {
+        c.registers.pc = c.pull(bus) as u16 | (c.pull(bus) as u16) << 8;
         c.registers.pc += 1;
         Ok(false)
     });
 
-    handler!(sbc, c, {
-        let mem = bus!(c).read(c.state.addr_abs)?;
+    handler!(sbc, c, bus, {
+        let mem = bus.read(c.state.addr_abs)?;
 
         let not_mem = (mem ^ 0xFF) as u16;
         let a = c.registers.a as u16;
@@ -1043,65 +1043,65 @@ pub mod instructions {
         Ok(true)
     });
 
-    handler!(sec, c, {
+    handler!(sec, c, bus, {
         c.set_flag(Flag6502::C, true);
         Ok(false)
     });
 
-    handler!(sed, c, {
+    handler!(sed, c, bus, {
         c.set_flag(Flag6502::D, true);
         Ok(false)
     });
 
-    handler!(sei, c, {
+    handler!(sei, c, bus, {
         c.set_flag(Flag6502::I, true);
         Ok(false)
     });
 
-    handler!(sta, c, {
-        bus!(c).write(c.state.addr_abs, c.registers.a)?;
+    handler!(sta, c, bus, {
+        bus.write(c.state.addr_abs, c.registers.a)?;
         Ok(false)
     });
 
-    handler!(sty, c, {
-        bus!(c).write(c.state.addr_abs, c.registers.y)?;
+    handler!(sty, c, bus, {
+        bus.write(c.state.addr_abs, c.registers.y)?;
         Ok(false)
     });
 
-    handler!(tax, c, {
+    handler!(tax, c, bus, {
         c.registers.x = c.registers.a;
         c.set_flag(Flag6502::Z, c.registers.x == 0);
         c.set_flag(Flag6502::N, (c.registers.x & 0x80) != 0);
         Ok(false)
     });
 
-    handler!(tay, c, {
+    handler!(tay, c, bus, {
         c.registers.y = c.registers.a;
         c.set_flag(Flag6502::Z, c.registers.y == 0);
         c.set_flag(Flag6502::N, (c.registers.y & 0x80) != 0);
         Ok(false)
     });
 
-    handler!(tsx, c, {
+    handler!(tsx, c, bus, {
         c.registers.x = c.registers.sp;
         c.set_flag(Flag6502::Z, c.registers.x == 0);
         c.set_flag(Flag6502::N, (c.registers.x & 0x80) != 0);
         Ok(false)
     });
 
-    handler!(txa, c, {
+    handler!(txa, c, bus, {
         c.registers.a = c.registers.x;
         c.set_flag(Flag6502::Z, c.registers.a == 0);
         c.set_flag(Flag6502::N, (c.registers.a & 0x80) != 0);
         Ok(false)
     });
 
-    handler!(txs, c, {
+    handler!(txs, c, bus, {
         c.registers.sp = c.registers.x;
         Ok(false)
     });
 
-    handler!(tya, c, {
+    handler!(tya, c, bus, {
         c.registers.a = c.registers.y;
         c.set_flag(Flag6502::Z, c.registers.a == 0);
         c.set_flag(Flag6502::N, (c.registers.a & 0x80) != 0);

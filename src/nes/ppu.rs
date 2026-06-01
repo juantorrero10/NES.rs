@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-use crate::nes::{bus_cpu::BusCpuError, game_rom::MemoryMirroring, mapper::PpuMapper};
+use crate::nes::{Nes, bus_cpu::BusCpuError, game_rom::MemoryMirroring, mapper::PpuMapper, ppu};
 
 #[allow(unused)]
 pub const ADDR_CHR_START: u16 = 0x0000;
@@ -14,12 +14,10 @@ pub const ADDR_PAL_START: u16 = 0x3F00;
 pub const ADDR_PAL_END: u16 = 0x3FFF;
 pub const SIZE_PALETTE: usize = 32;
 
-struct BusPpu {
-    mapper: Box<dyn PpuMapper>,
+pub struct BusPpu {
     chips: BusPpuChips,
     palettes: [u8; SIZE_PALETTE],
     fake_value: u8,
-    mirroring: MemoryMirroring,
 }
 
 pub struct BusPpuChips {
@@ -27,25 +25,21 @@ pub struct BusPpuChips {
 }
 
 impl BusPpu {
-    fn new(mapper: Box<dyn PpuMapper>, mirroring: MemoryMirroring) -> Self {
+    pub fn new() -> Self {
         BusPpu {
-            mapper,
             chips: BusPpuChips {
                 nametables: [0; 2 * SIZE_NAME_TBL],
             },
-            mirroring,
             palettes: [0; SIZE_PALETTE],
             fake_value: 0,
         }
     }
 
-    fn resolve_addr(&mut self, addr: u16, write: bool) -> &mut u8 {
+    fn resolve_addr<'a>(&'a mut self, addr: u16, write: bool, mapper: &'a mut Box<dyn PpuMapper>) -> &'a mut u8 {
         let mut mapped_addr = addr & 0x3FFF;
         // Mapper only acts on CHR-ROM data
-        if mapped_addr <= ADDR_NAME_END && self.mapper.need_intercept(addr) {
-            return self
-                .mapper
-                .intercept(addr, &mut self.chips, self.mirroring, write);
+        if mapped_addr <= ADDR_NAME_END && mapper.need_intercept(addr) {
+            return mapper.intercept(addr, &mut self.chips, write);
         }
         match mapped_addr {
             ADDR_NAME_START..=ADDR_NAME_END => {
@@ -56,7 +50,7 @@ impl BusPpu {
                 let mut addr_byte = mapped_addr - 0x2000;
                 let name_table_idx = addr_byte / 0x400;
                 addr_byte &= (SIZE_NAME_TBL as u16) - 1;
-                addr_byte += match self.mirroring {
+                addr_byte += match mapper.mirroring() {
                     MemoryMirroring::Vertical => match name_table_idx {
                         0 => 0,
                         1 => 0x400,
@@ -72,7 +66,7 @@ impl BusPpu {
                         _ => panic!("{} {} {}", name_table_idx, addr_byte, addr),
                     },
                     _ => {
-                        panic!("Mirroring not implemented: {:?}", self.mirroring)
+                        panic!("Mirroring not implemented: {:?}", mapper.mirroring())
                     }
                 };
                 return self.chips.nametables.get_mut(addr_byte as usize).unwrap();
@@ -94,13 +88,13 @@ impl BusPpu {
         unreachable!();
     }
     #[inline(always)]
-    pub fn read(&mut self, addr: u16) -> u8 {
-        *self.resolve_addr(addr, false)
+    pub fn read(&mut self, addr: u16, mapper: &mut Box<dyn PpuMapper>) -> u8 {
+        *self.resolve_addr(addr, false, mapper)
     }
 
     #[inline(always)]
-    pub fn write(&mut self, addr: u16, data: u8) {
-        *self.resolve_addr(addr, true) = data;
+    pub fn write(&mut self, addr: u16, data: u8, mapper: &mut Box<dyn PpuMapper>) {
+        *self.resolve_addr(addr, true, mapper) = data;
     }
 }
 
@@ -134,8 +128,6 @@ pub struct Ppu {
 
     bg_regs: BGRegs,
     fg_regs: FGRegs,
-
-    bus_ppu: BusPpu,
 }
 
 #[derive(Default)]
@@ -181,8 +173,7 @@ struct OAM {
     addr: usize,
     mem: [OAttribute; 64],
 
-
-    secondary_mem: [OAttribute; 8],    
+    secondary_mem: [OAttribute; 8],
 }
 
 #[derive(Clone, Copy)]
@@ -252,13 +243,13 @@ type Result<T> = std::result::Result<T, PpuError>;
 
 // Main renderring implementation block
 impl Ppu {
-    pub fn clock(&mut self) {
+    pub fn clock(&mut self, nes: *mut Nes) {
         // self.frame_complete = false;
         // Background register manipulation timeline.
         match self.scanline {
             -1..=239 => {
-                self.scanline_bg_routine();
-                self.scanline_fg_routine();
+                self.scanline_bg_routine(nes);
+                self.scanline_fg_routine(nes);
             }
             240 => {
                 // Post render line
@@ -282,7 +273,9 @@ impl Ppu {
 
         let mut red_col = false;
 
-        if let Some(cyc) = self.fg_regs.sprite0_hit_scheduled && cyc == self.cycle {
+        if let Some(cyc) = self.fg_regs.sprite0_hit_scheduled
+            && cyc == self.cycle
+        {
             self.status |= STATUS_SPRITE_0_HIT;
             self.fg_regs.sprite0_hit_scheduled = None;
         }
@@ -311,13 +304,12 @@ impl Ppu {
             self.blend_colors((fg_pal, fg_col), (bg_pal, bg_col), fg_priority)
         };
 
-        let mut system_color_idx = self
-            .bus_ppu
-            .read(ADDR_PAL_START + (4 * pal_idx as u16) + col_idx as u16);
+        let mut system_color_idx =
+            self.read(ADDR_PAL_START + (4 * pal_idx as u16) + col_idx as u16, nes);
         // restraint to the 64 colors
         system_color_idx &= 0x3f;
         // FINALLY
-        
+
         let mut rbga_color = NES_COLOR_PALETTE[system_color_idx as usize];
 
         if red_col {
@@ -357,7 +349,7 @@ impl Ppu {
         }
     }
 
-    fn scanline_bg_routine(&mut self) {
+    fn scanline_bg_routine(&mut self, nes: *mut Nes) {
         // Guard
         if !self.is_rendering_enabled() {
             return;
@@ -374,7 +366,7 @@ impl Ppu {
                 if self.scanline == -1 && self.cycle == 1 {
                     self.status &= !(STATUS_VBLANK | STATUS_SPRITE_0_HIT | STATUS_SPRITE_OVERFLOW);
                 }
-                self.process_bg_step();
+                self.process_bg_step(nes);
                 if self.cycle == 256 {
                     self.increment_scroll_y();
                 }
@@ -388,7 +380,7 @@ impl Ppu {
                 }
             }
             321..=336 => {
-                self.process_bg_step();
+                self.process_bg_step(nes);
             }
             // Dummy NT reads
             337..=340 => {
@@ -396,13 +388,13 @@ impl Ppu {
                     | (self.vram.addr
                         & (VRAM_COARSE_X_MASK | VRAM_COARSE_Y_MASK | VRAM_NAMETABLE_MASK));
                 // Although the data is discarded, mappers can syncronize stuff in the reads
-                let _ = self.bus_ppu.read(dummy_nt_addr);
+                let _ = self.read(dummy_nt_addr, nes);
             }
             _ => unreachable!(),
         }
     }
 
-    fn scanline_fg_routine(&mut self) {
+    fn scanline_fg_routine(&mut self, nes: *mut Nes) {
         if !self.is_rendering_enabled() {
             return;
         }
@@ -436,7 +428,7 @@ impl Ppu {
 
             257..=319 => {}
             320 => {
-                self.sprite_fetch();
+                self.sprite_fetch(nes);
             }
 
             // Wait for next line
@@ -475,7 +467,7 @@ impl Ppu {
         }
     }
 
-    fn sprite_fetch(&mut self) {
+    fn sprite_fetch(&mut self, nes: *mut Nes) {
         for (i, active_sprite) in self.oam.secondary_mem.iter().enumerate() {
             let mut row = self.scanline as u8 - active_sprite.y_pos;
 
@@ -511,8 +503,8 @@ impl Ppu {
                 addr = base_addr | (tile_idx << 4) | (row as u16 & 7);
             }
 
-            let mut pattern_lo = self.bus_ppu.read(addr);
-            let mut pattern_hi = self.bus_ppu.read(addr + 8);
+            let mut pattern_lo = self.read(addr, nes);
+            let mut pattern_hi = self.read(addr + 8, nes);
 
             if active_sprite.flags.get(HorizontalFlip) != 0 {
                 pattern_lo = pattern_lo.reverse_bits();
@@ -531,7 +523,7 @@ impl Ppu {
         }
     }
 
-    fn process_bg_step(&mut self) {
+    fn process_bg_step(&mut self, nes: *mut Nes) {
         self.shift_bg_registers();
         // Process each of the 8 sub-cycles
         let sub_cycle = (self.cycle - 1) % 8;
@@ -542,7 +534,7 @@ impl Ppu {
                 let nt_addr = 0x2000
                     | (self.vram.addr
                         & (VRAM_COARSE_X_MASK | VRAM_COARSE_Y_MASK | VRAM_NAMETABLE_MASK));
-                self.bg_regs.latch_name = self.bus_ppu.read(nt_addr)
+                self.bg_regs.latch_name = self.read(nt_addr, nes)
             }
             2 => {}
             // Attribute table read
@@ -567,7 +559,7 @@ impl Ppu {
                     | 0x03C0
                     | ((coarse_y >> 2) << 3)
                     | (coarse_x >> 2);
-                let attr_byte = self.bus_ppu.read(attr_addr);
+                let attr_byte = self.read(attr_addr, nes);
 
                 let shift = ((coarse_y & 2) << 1) | (coarse_x & 2);
                 self.bg_regs.latch_att = (attr_byte >> shift) & 0x03;
@@ -589,9 +581,9 @@ impl Ppu {
                 let pat_addr = pattern_table_base + (tile_id << 4) + fine_y;
 
                 if sub_cycle == 5 {
-                    self.bg_regs.latch_pat_lo = self.bus_ppu.read(pat_addr);
+                    self.bg_regs.latch_pat_lo = self.read(pat_addr, nes);
                 } else {
-                    self.bg_regs.latch_pat_hi = self.bus_ppu.read(pat_addr + 8);
+                    self.bg_regs.latch_pat_hi = self.read(pat_addr + 8, nes);
 
                     // This is just something that happens periodically.
                     // Unrelated to reading from Pattern high table but it happens at the same
@@ -768,10 +760,14 @@ impl Ppu {
         if bg_col > 0 && fg_col > 0 && self.cycle <= 256 {
             if self.fg_regs.sprite0_possible && sprite_zero_rendered {
                 if self.mask & (MASK_RENDER_LEFT_SPR | MASK_RENDER_LEFT_SPR) != 0 {
-                    if self.cycle >= 1 && let None = self.fg_regs.sprite0_hit_scheduled {
+                    if self.cycle >= 1
+                        && let None = self.fg_regs.sprite0_hit_scheduled
+                    {
                         self.fg_regs.sprite0_hit_scheduled = Some(self.cycle)
                     }
-                } else if self.cycle >= 9  && let None = self.fg_regs.sprite0_hit_scheduled {
+                } else if self.cycle >= 9
+                    && let None = self.fg_regs.sprite0_hit_scheduled
+                {
                     self.fg_regs.sprite0_hit_scheduled = Some(self.cycle)
                 }
             }
@@ -812,9 +808,8 @@ impl PpuRegister {
 }
 
 impl Ppu {
-    pub fn new(mapper: Box<dyn PpuMapper>, mirroring: MemoryMirroring) -> Self {
+    pub fn new() -> Self {
         Ppu {
-            bus_ppu: BusPpu::new(mapper, mirroring),
             screen_data: [0u8; SCREEN_SIZE],
             oam: OAM {
                 mem: [OAttribute::default(); 64],
@@ -857,7 +852,24 @@ impl Ppu {
         self.screen_data.fill(0);
     }
 
-    pub fn event_cpu_has_written(&mut self, reg: PpuRegister, data: u8) -> Result<()> {
+    pub fn read(&self, addr: u16, nes: *mut Nes) -> u8 {
+        let addr = addr & 0x3FFF;
+        let nes = unsafe { nes.as_mut().unwrap() };
+        nes.ppu_read(addr)
+    }
+
+    pub fn write(&self, addr: u16, data: u8, nes: *mut Nes) {
+        let addr = addr & 0x3FFF;
+        let nes = unsafe { nes.as_mut().unwrap() };
+        nes.ppu_write(addr, data)
+    }
+
+    pub fn event_cpu_has_written(
+        &mut self,
+        reg: PpuRegister,
+        data: u8,
+        nes: *mut Nes,
+    ) -> Result<()> {
         match reg {
             Ctrl => {
                 self.ctrl = data;
@@ -910,7 +922,7 @@ impl Ppu {
                 self.vram.latch ^= true;
             }
             VRAMData => {
-                self.bus_ppu.write(self.vram.addr, data);
+                self.write(self.vram.addr, data, nes);
 
                 // Increment VRAM Addr
                 let increment = if (self.ctrl & 0x04) != 0 { 32 } else { 1u16 };
@@ -921,7 +933,7 @@ impl Ppu {
         Ok(())
     }
 
-    pub fn event_cpu_has_read(&mut self, reg: PpuRegister) -> Result<u8> {
+    pub fn event_cpu_has_read(&mut self, reg: PpuRegister, nes: *mut Nes) -> Result<u8> {
         match reg {
             Status => {
                 let ret = self.status;
@@ -943,7 +955,7 @@ impl Ppu {
             }
             VRAMData => {
                 let mut fetch = self.vram.delayed_data;
-                self.vram.delayed_data = self.bus_ppu.read(self.vram.addr);
+                self.vram.delayed_data = self.read(self.vram.addr, nes);
 
                 // Reading paletts bypass this delay
                 if self.vram.addr >= ADDR_PAL_START {
@@ -982,13 +994,11 @@ impl Ppu {
         (self.scanline, self.cycle)
     }
 
-    pub fn debug_extract_palettes(&mut self, out: &mut [[[u8; 4]; 4]; 8]) {
+    pub fn debug_extract_palettes(&mut self, out: &mut [[[u8; 4]; 4]; 8], nes: *mut Nes) {
         for palette_idx in 0..8 {
             for color_idx in 0..4 {
-                let system_color_idx = self
-                    .bus_ppu
-                    .read(ADDR_PAL_START + 4 * palette_idx + color_idx)
-                    as usize;
+                let system_color_idx =
+                    self.read(ADDR_PAL_START + 4 * palette_idx + color_idx, nes) as usize;
                 out[palette_idx as usize][color_idx as usize][0..3]
                     .copy_from_slice(NES_COLOR_PALETTE[system_color_idx].as_slice());
                 out[palette_idx as usize][color_idx as usize][3] = 255;
@@ -1001,6 +1011,7 @@ impl Ppu {
         bank_num: u8,
         palette_idx: u16,
         overwritte_custom_palette: Option<[u8; 4]>,
+        nes: *mut Nes,
         out: &mut [u8; DBG_CANVAS_SIZE],
     ) {
         let bank_offset = (bank_num as u16 * 0x1000) & 0x1FFF;
@@ -1009,8 +1020,8 @@ impl Ppu {
             for j in 0..16 {
                 let offset = (16 * (j * 16 + i)) + bank_offset;
                 for row in 0..8 {
-                    let tile_lsb = self.bus_ppu.read(offset + row);
-                    let tile_msb = self.bus_ppu.read(offset + row + 8);
+                    let tile_lsb = self.read(offset + row, nes);
+                    let tile_msb = self.read(offset + row + 8, nes);
 
                     for col in 0..8 {
                         let bit_l = (tile_lsb >> (7 - col)) & 0x01;
@@ -1025,11 +1036,10 @@ impl Ppu {
                             4 * (canvas_offset_y * DBG_CANVAS_WIDTH + canvas_offset_x);
 
                         let color_idx = if pattern_col != 0 {
-                            self.bus_ppu
-                                .read(ADDR_PAL_START + 4 * palette_idx + pattern_col as u16)
+                            self.read(ADDR_PAL_START + 4 * palette_idx + pattern_col as u16, nes)
                                 as usize
                         } else {
-                            self.bus_ppu.read(ADDR_PAL_START) as usize
+                            self.read(ADDR_PAL_START, nes) as usize
                         };
 
                         match overwritte_custom_palette {

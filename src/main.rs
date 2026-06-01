@@ -317,6 +317,31 @@ fn nes_loop(mut nes: Nes, mut ui: AppUI) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// Automatically called before main.
+fn nes_init() -> Nes {
+    let mut args = std::env::args();
+    while let Some(s) = args.next() && s.starts_with("--") {}
+
+    let rom_path = match args.next() {
+        Some(f) => OsString::from(&f),
+        _ => {
+            let file = rfd::FileDialog::new()
+                .add_filter("NES ROM", &["nes", "rom"])
+                .add_filter("any file", &["*"])
+                .pick_file();
+            match file {
+                Some(p) => p.as_os_str().to_owned(),
+                None => {
+                    panic!("a");
+                }
+            }
+        }
+    };
+    let mut nes = Nes::new(rom_path)?;
+    nes.reset();
+    nes
+}
+
 fn init() -> Result<(Nes, AppUI), Box<dyn Error>> {
     let mut light_mode = false;
     let mut light_flag = !0usize;

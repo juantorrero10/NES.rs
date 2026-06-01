@@ -1,15 +1,15 @@
-use std::cell::RefCell;
+use std::error::Error;
 use std::fmt::{Debug, Write};
-use std::rc::Rc;
 
 use colored::Colorize;
 use thiserror::Error;
 
+use crate::nes::{Nes, NesError};
 use crate::nes::bus_cpu::{BusCpu, BusCpuError};
 use crate::nes::instruction_set::{
-    self, INSTRUCTION_LUT, Instruction6502, addressing, instructions,
+    INSTRUCTION_LUT, Instruction6502, addressing,
 };
-use crate::ui::framestate::{self, CpuInfo, FrameState};
+use crate::ui::framestate::{CpuInfo};
 
 const STACK_TOP: u16 = 0x0100;
 const STACK_BOTTOM: u16 = 0x01FF;
@@ -98,38 +98,37 @@ pub struct State6502 {
 
 pub struct Cpu {
     pub registers: RegFile6502,
-    pub bus_cpu: Rc<RefCell<BusCpu>>,
     pub state: State6502,
-
     pub log: bool,
 }
 
 #[derive(Error, Debug)]
 pub enum CpuError {
     #[error("The main bus (the CPU Bus) failed: {0}")]
-    BusCpuError(#[from] BusCpuError),
+    IOError(String),
     #[error("{0}")]
     InstError(String),
 }
 
-type Result<T> = std::result::Result<T, CpuError>;
-
-#[macro_export]
-macro_rules! bus {
-    ($self:expr) => {
-        $self.bus_cpu.borrow_mut()
+macro_rules! nes {
+    ($nes_ptr:expr) => {
+        unsafe {
+            ($nes_ptr.as_mut().unwrap())
+        }
     };
 }
 
+type Result<T> = std::result::Result<T, Box<dyn Error>>;
+
 impl Cpu {
-    pub fn new(bus: Rc<RefCell<BusCpu>>) -> Self {
+    pub fn new() -> Self {
         Cpu {
             registers: RegFile6502::default(),
-            bus_cpu: bus,
             log: false,
             state: State6502::default(),
         }
     }
+
 
     #[inline(always)]
     pub fn set_flag(&mut self, f: Flag6502, b: bool) {
@@ -141,18 +140,35 @@ impl Cpu {
     }
 
     #[inline(always)]
+    pub fn read(&self, addr: u16, nes: *mut Nes) -> u8 {
+        nes!(nes).read(addr).unwrap()
+    }
+
+
+    #[inline(always)]
+    pub fn write(&self, addr: u16, data: u8, nes: *mut Nes) {
+        nes!(nes).write(addr, data).unwrap()
+    }
+
+    #[inline(always)]
+    pub fn read16(&self, addr: u16, nes: *mut Nes) -> u16 {
+        nes!(nes).read16(addr).unwrap()
+    }
+
+
+    #[inline(always)]
     pub fn get_flag(&self, f: Flag6502) -> bool {
         (self.registers.sr & (f as u8)) != 0
     }
 
     #[inline(always)]
-    pub fn fetch(&mut self) -> Result<u8> {
+    pub fn fetch(&mut self, nes: *mut Nes) -> u8 {
         if INSTRUCTION_LUT[self.state.last_opcode as usize].addressing_handler
             != addressing::AddrMode::IMP
         {
-            self.state.fetched = bus!(self).read(self.state.addr_abs)?;
+            self.state.fetched = self.read(self.state.addr_abs, nes);
         }
-        return Ok(self.state.fetched);
+        return self.state.fetched;
     }
 
     #[inline(always)]
@@ -160,43 +176,40 @@ impl Cpu {
         self.registers.pc
     }
 
-    pub fn reset(&mut self) -> Result<()> {
+    pub fn reset(&mut self, nes: *mut Nes) {
         self.registers = RegFile6502::default();
-        self.registers.pc = bus!(self).read16(RESET_VEC)?;
+        self.registers.pc = self.read16(RESET_VEC, nes);
         self.set_flag(Flag6502::U, true);
 
         self.state = State6502::default();
         self.state.cycles_left = 7;
-        Ok(())
     }
 
     #[inline(always)]
-    pub fn push(&mut self, data: u8) -> Result<()> {
-        bus!(self).write(STACK_TOP + self.registers.sp as u16, data)?;
+    pub fn push(&mut self, data: u8, nes: *mut Nes) {
+        nes!(nes).write(STACK_TOP + self.registers.sp as u16, data);
         self.registers.sp -= 1;
-        Ok(())
     }
 
     #[inline(always)]
-    pub fn pull(&mut self) -> Result<u8> {
+    pub fn pull(&mut self, nes: *mut Nes) -> u8 {
         self.registers.sp += 1;
-        Ok(bus!(self).read(STACK_TOP + self.registers.sp as u16)?)
+        self.read(STACK_TOP + self.registers.sp as u16, nes)
     }
 
-    pub fn clock(&mut self, log: Option<&mut String>) -> Result<()> {
+    pub fn clock(&mut self, _: Option<&mut String>, nes: *mut Nes) {
         if self.state.cycles_left != 0 {
             self.state.cycles_left -= 1;
             self.state.clock_counter += 1;
-            return Ok(());
         }
 
         // Load up a new instruction
         self.set_flag(Flag6502::U, true);
 
-        if let Some(out) = log {
+        /*if let Some(out) = log {
             Instruction6502::dissasemble_nestest_log(
                 self.registers.pc,
-                self.bus_cpu.borrow_mut(),
+                bus,
                 out,
             )
             .unwrap();
@@ -209,32 +222,36 @@ impl Cpu {
                 self.registers.sr,
                 self.registers.sp
             );
-        }
+        }*/
 
-        self.state.last_opcode = bus!(self).read(self.registers.pc)?;
+        self.state.last_opcode = self.read(self.registers.pc, nes);
         self.registers.pc += 1;
 
         let ins = INSTRUCTION_LUT[self.state.last_opcode as usize];
 
         self.state.cycles_left = ins.n_cycles;
 
+        let nes_ref = unsafe {
+            nes.as_mut().expect(&format!("Could deref Nes pointer. {:?}", self))
+        };
+
         // Execute addressing handler
         // Additional clock cycle if needed
-        let additional = ((ins.addressing_handler.get_fptr())(self).map_err(|e| {
+        let additional = ((ins.addressing_handler.get_fptr())(self, nes_ref).map_err(|e| {
             log::error!(
                 "Failure on addressing handler: opc 0x{:02X}",
                 self.state.last_opcode
             );
             return CpuError::InstError(format!("{} => {}", ins.pneumonic, e));
-        }))?;
+        })).unwrap();
         // Execute instruction
-        let additional2 = (ins.instruction_handler)(self).map_err(|e| {
+        let additional2 = (ins.instruction_handler)(self, nes_ref).map_err(|e| {
             log::error!(
                 "Failure on instruction_handler handler: opc 0x{:02X}",
                 self.state.last_opcode
             );
             return CpuError::InstError(format!("{} => {}", ins.pneumonic, e));
-        })?;
+        }).unwrap();
 
         if additional && additional2 {
             self.state.cycles_left += 1;
@@ -244,43 +261,38 @@ impl Cpu {
 
         self.state.cycles_left -= 1;
         self.state.clock_counter += 1;
-        Ok(())
     }
 
     // -- Interrupt logic --
     #[inline]
-    fn interrupt_save_state(&mut self) -> Result<()> {
-        self.push((self.registers.pc >> 8) as u8)?;
-        self.push((self.registers.pc & 0x00FF) as u8)?;
+    fn interrupt_save_state(&mut self, nes: *mut Nes) {
+        self.push((self.registers.pc >> 8) as u8, nes);
+        self.push((self.registers.pc & 0x00FF) as u8, nes);
 
         self.set_flag(Flag6502::I, true);
 
         let pushed_sr = (self.registers.sr | Flag6502::U as u8) & !(Flag6502::B as u8);
-        self.push(pushed_sr)?;
-
-        Ok(())
+        self.push(pushed_sr, nes);
     }
 
     #[inline(always)]
-    pub fn irq(&mut self) -> Result<()> {
+    pub fn irq(&mut self, nes: *mut Nes) {
         // If they are disabled (I: Interrupt enable [Set low]).
         if self.get_flag(Flag6502::I) {
-            return Ok(());
+            return;
         }
-        self.interrupt_save_state()?;
-        let addr = bus!(self).read16(IRQ_VEC)?;
+        self.interrupt_save_state(nes);
+        let addr = self.read16(IRQ_VEC, nes);
         self.state.cycles_left = 7;
         self.registers.pc = addr;
-        Ok(())
     }
 
     #[inline(always)]
-    pub fn nmi(&mut self) -> Result<()> {
-        self.interrupt_save_state()?;
-        let addr = bus!(self).read16(NMI_VEC)?;
+    pub fn nmi(&mut self, nes: *mut Nes) {
+        self.interrupt_save_state(nes);
+        let addr = self.read16(NMI_VEC, nes);
         self.state.cycles_left = 7;
         self.registers.pc = addr;
-        Ok(())
     }
 }
 use Flag6502::*;
