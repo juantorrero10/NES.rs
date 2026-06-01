@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use crate::nes::cpu::RegFile6502;
 
 pub struct FrameState<'a> {
+    pub dev_mode: bool,
     pub screen: GameScreen,
     pub cpu_info: CpuInfo,
     pub dissasembly: Dissassebly<'a>,

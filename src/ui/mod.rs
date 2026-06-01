@@ -107,7 +107,6 @@ struct RaylibInfo {
     game_texture: RenderTexture2D,
     chr_bank0: RenderTexture2D,
     chr_bank1: RenderTexture2D,
-    audio_stream: raylib::ffi::AudioStream,
 }
 
 impl RaylibInfo {
@@ -117,7 +116,6 @@ impl RaylibInfo {
         texture: RenderTexture2D, /*, screen_data: Vec<u8>*/
         c0: RenderTexture2D,
         c1: RenderTexture2D,
-        astream: raylib::ffi::AudioStream,
     ) -> Self {
         Self {
             handle,
@@ -125,7 +123,6 @@ impl RaylibInfo {
             game_texture: texture,
             chr_bank0: c0,
             chr_bank1: c1,
-            audio_stream: astream
         }
     }
 }
@@ -197,7 +194,6 @@ pub struct AppUI {
     pub ctx: imgui::Context,
     pub renderer: Renderer,
     pub raylib: RaylibInfo,
-    pub dev_mode: bool,
     theme: Theme,
     fonts: Fonts,
     options: Options,
@@ -267,17 +263,12 @@ impl AppUI {
         c0.set_texture_filter(&thread, raylib::ffi::TextureFilter::TEXTURE_FILTER_POINT);
         c1.set_texture_filter(&thread, raylib::ffi::TextureFilter::TEXTURE_FILTER_POINT);
 
-        // Audio
-        let _ = RaylibAudio::init_audio_device().unwrap();
-        let audio = unsafe { LoadAudioStream(44100, 32, 1) };
-        unsafe { PlayAudioStream(audio) };
 
         Self {
             options: Options::default(),
             ctx,
             renderer,
-            raylib: RaylibInfo::new(rl, thread, screen, c0, c1, audio),
-            dev_mode: false,
+            raylib: RaylibInfo::new(rl, thread, screen, c0, c1),
             text_buffer: String::with_capacity(128),
             addr_disassm_buffer: String::with_capacity(5),
             addr_memedit_buffer: "0000".to_owned(),
@@ -345,23 +336,12 @@ impl AppUI {
             self.raylib.handle.get_screen_height() as f32,
         ]; // Get the window size;
         let dims;
-        if self.dev_mode {
+        if st.dev_mode {
             dims = PanelProportions::new(window, 0.7, 0.7, 0.25, 0.33);
         } else {
             dims = PanelProportions::new(window, 1.0, 1.0, 0.25, 0.33);
         }
 
-        if self
-            .raylib
-            .handle
-            .is_key_pressed(raylib::ffi::KeyboardKey::KEY_F)
-            && !ui.io().want_capture_keyboard
-        {
-            self.dev_mode = match self.dev_mode {
-                true => false,
-                false => true,
-            }
-        }
 
         let panel_flag = imgui::WindowFlags::NO_TITLE_BAR
             | imgui::WindowFlags::NO_RESIZE
@@ -430,7 +410,7 @@ impl AppUI {
             });
         _t.pop();
 
-        if self.dev_mode {
+        if st.dev_mode {
             ui.window("ppu stuff")
                 .flags(panel_flag)
                 .position(dims.position_right_middle(), imgui::Condition::Always)

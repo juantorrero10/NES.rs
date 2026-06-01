@@ -1,12 +1,6 @@
 use thiserror::Error;
 
-use crate::{
-    nes::{
-        bus_cpu::{BusCpuError},
-        game_rom::MemoryMirroring,
-        mapper::PpuMapper,
-    },
-};
+use crate::nes::{bus_cpu::BusCpuError, game_rom::MemoryMirroring, mapper::PpuMapper};
 
 #[allow(unused)]
 pub const ADDR_CHR_START: u16 = 0x0000;
@@ -49,7 +43,9 @@ impl BusPpu {
         let mut mapped_addr = addr & 0x3FFF;
         // Mapper only acts on CHR-ROM data
         if mapped_addr <= ADDR_NAME_END && self.mapper.need_intercept(addr) {
-            return self.mapper.intercept(addr, &mut self.chips, self.mirroring, write);
+            return self
+                .mapper
+                .intercept(addr, &mut self.chips, self.mirroring, write);
         }
         match mapped_addr {
             ADDR_NAME_START..=ADDR_NAME_END => {
@@ -162,6 +158,7 @@ struct ActiveSprite {
     pattern_hi: u8,
     x_counter: u8,
     attribute: OAFlags,
+    is_sprite_zero: bool,
 }
 
 #[derive(Default)]
@@ -169,6 +166,7 @@ struct FGRegs {
     sprites: [ActiveSprite; 8],
     active_sprites_count: usize,
     sprite0_possible: bool,
+    sprite0_hit_scheduled: Option<(usize, isize)>,
 }
 
 #[derive(Default)]
@@ -184,8 +182,9 @@ struct OAM {
     addr: usize,
     mem: [OAttribute; 64],
 
-
-    secondary_mem: [OAttribute; 8],    
+    secondary_mem: [OAttribute; 8],
+    evaluated_sprites_count: usize,
+    evaluated_sprite0_at: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -260,6 +259,9 @@ impl Ppu {
         // Background register manipulation timeline.
         match self.scanline {
             -1..=239 => {
+                if self.scanline == -1 {
+                    self.fg_regs.sprite0_hit_scheduled = None;
+                }
                 self.scanline_bg_routine();
                 self.scanline_fg_routine();
             }
@@ -306,16 +308,25 @@ impl Ppu {
                 if self.fg_regs.sprite0_possible && sprite_zero_rendered {
                     if self.mask & (MASK_RENDER_LEFT_SPR | MASK_RENDER_LEFT_BG) != 0 {
                         if self.cycle >= 1 {
-                            self.status |= STATUS_SPRITE_0_HIT;
+                            self.fg_regs.sprite0_hit_scheduled =
+                                Some((self.cycle, self.scanline + 1))
                         }
                     } else if self.cycle >= 9 {
-                        self.status |= STATUS_SPRITE_0_HIT;
+                        self.fg_regs.sprite0_hit_scheduled = Some((self.cycle, self.scanline + 1))
                     }
                 }
             }
 
             self.blend_colors((fg_pal, fg_col), (bg_pal, bg_col), fg_priority)
         };
+
+        if let Some((cyc, sc)) = self.fg_regs.sprite0_hit_scheduled
+            && sc == self.scanline
+            && cyc == self.cycle
+        {
+            self.status |= STATUS_SPRITE_0_HIT;
+            self.fg_regs.sprite0_hit_scheduled = None
+        }
 
         let mut system_color_idx = self
             .bus_ppu
@@ -413,12 +424,14 @@ impl Ppu {
             self.shift_fg_registers();
         }
         match self.cycle {
-            0 => {}
+            0 => {
+                self.fg_regs.active_sprites_count = self.oam.evaluated_sprites_count;
+            }
             // Clean secondary Mem if not in pre-render line
             1 => {
                 if self.scanline != -1 {
                     self.oam.secondary_mem = [OAttribute::default(); 8];
-                    self.fg_regs.active_sprites_count = 0;
+                    self.oam.evaluated_sprites_count = 0;
                 }
             }
             2..=64 => {
@@ -457,28 +470,34 @@ impl Ppu {
             };
 
             // Check vertical intersection
-            let sc = self.scanline as u8;
+            let sc = (self.scanline + 1) as u8;
             if sc < sprite.y_pos || sc >= sprite.y_pos + sprite_height {
                 continue;
             }
 
-            if self.fg_regs.active_sprites_count >= 8 && self.scanline != -1 {
-                self.status |= STATUS_SPRITE_OVERFLOW;
+            if self.oam.evaluated_sprites_count >= 8 {
+                if self.scanline != -1 {
+                    self.status |= STATUS_SPRITE_OVERFLOW;
+                }
                 break;
             }
 
             if i == 0 {
                 self.fg_regs.sprite0_possible = true;
+                self.oam.evaluated_sprite0_at = i;
             }
             // Copy to seconday
-            self.oam.secondary_mem[self.fg_regs.active_sprites_count] = *sprite;
-            self.fg_regs.active_sprites_count += 1;
+            self.oam.secondary_mem[self.oam.evaluated_sprites_count] = *sprite;
+            self.oam.evaluated_sprites_count += 1;
         }
     }
 
     fn sprite_fetch(&mut self) {
-        for (i, active_sprite) in self.oam.secondary_mem.iter().enumerate() {
-            let mut row = self.scanline as u8 - active_sprite.y_pos;
+        for (i, active_sprite) in self.oam.secondary_mem[..self.oam.evaluated_sprites_count]
+            .iter()
+            .enumerate()
+        {
+            let mut row = (self.scanline + 1) as u8 - active_sprite.y_pos;
 
             let sprite_height = if (self.ctrl & CTRL_SPRITE_SIZE) != 0 {
                 16
@@ -506,7 +525,7 @@ impl Ppu {
                     0x0000
                 };
                 let mut tile_idx = (active_sprite.tile_id & 0xfe) as u16;
-                if row > 8 {
+                if row >= 8 {
                     tile_idx += 1;
                 }
                 addr = base_addr | (tile_idx << 4) | (row as u16 & 7);
@@ -525,10 +544,8 @@ impl Ppu {
                 pattern_hi,
                 x_counter: active_sprite.x_pos,
                 attribute: active_sprite.flags,
+                is_sprite_zero: self.oam.evaluated_sprite0_at == i && self.fg_regs.sprite0_possible,
             }
-        }
-        for s in &mut self.fg_regs.sprites[self.fg_regs.active_sprites_count..8] {
-            *s = ActiveSprite::default();
         }
     }
 
@@ -626,7 +643,7 @@ impl Ppu {
         let mut col_idx = 0;
         let mut priority = false;
         let mut is_zero_rendered = false;
-        for (i, spr) in self.fg_regs.sprites.iter().enumerate() {
+        for spr in &self.fg_regs.sprites[..self.fg_regs.active_sprites_count] {
             if spr.x_counter != 0 {
                 continue;
             }
@@ -640,7 +657,7 @@ impl Ppu {
 
             pal_idx = spr.attribute.get(SpritePalIndex) + 4;
             priority = spr.attribute.get(Priority) == 0;
-            is_zero_rendered = i == 0;
+            is_zero_rendered = spr.is_sprite_zero;
 
             break;
         }
@@ -802,6 +819,8 @@ impl Ppu {
                 mem: [OAttribute::default(); 64],
                 addr: 0,
                 secondary_mem: [OAttribute::default(); 8],
+                evaluated_sprites_count: 0,
+                evaluated_sprite0_at: 0,
             },
             vram: VRAM::default(),
             bg_regs: BGRegs::default(),

@@ -1,10 +1,13 @@
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
-
+//#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::{
-    collections::HashMap, error::Error, ffi::OsString, fmt::Write, thread::sleep, time::{Duration, Instant}
+    collections::HashMap,
+    error::Error,
+    ffi::OsString,
+    fmt::Write,
+    thread::sleep,
+    time::{Duration, Instant},
 };
-
 
 use colored::Colorize;
 use log::info;
@@ -15,7 +18,9 @@ use crate::{
     nes::{Nes, bus_cpu::BusCpu, instruction_set::Instruction6502},
     ui::{
         AppUI, Theme,
-        framestate::{Apu, Dissassebly, FrameState, GameScreen, MemEdit, PersistentFrameState, PpuInfo},
+        framestate::{
+            Apu, Dissassebly, FrameState, GameScreen, MemEdit, PersistentFrameState, PpuInfo,
+        },
     },
 };
 
@@ -23,7 +28,6 @@ mod nes;
 mod ui;
 
 const FPS60_ELAPSED: u128 = 16667;
-
 
 enum RunMode {
     Stopped,
@@ -114,6 +118,8 @@ fn nes_loop(mut nes: Nes, mut ui: AppUI) -> Result<(), Box<dyn Error>> {
     let mut frame_updated = true;
     let mut step_frame = false;
 
+    let mut dev_mode = false;
+
     // let mut audio = vec![0f32; 2048];
     // let mut phase = 0.0f32;
 
@@ -122,7 +128,6 @@ fn nes_loop(mut nes: Nes, mut ui: AppUI) -> Result<(), Box<dyn Error>> {
 
     while !ui.raylib_handle().window_should_close() {
         let t0 = Instant::now();
-
 
         match sim {
             RunMode::Sim => {
@@ -146,14 +151,15 @@ fn nes_loop(mut nes: Nes, mut ui: AppUI) -> Result<(), Box<dyn Error>> {
             }
         }
 
-        
         if ui.raylib_handle().is_key_pressed(KeyboardKey::KEY_R) {
             nes.reset()?;
         }
 
         // Pressing V to jump a frame or Simulation Speed
         if step_frame {
-            nes.controller.borrow_mut().update_controller_status(ui.raylib_handle(), None);
+            nes.controller
+                .borrow_mut()
+                .update_controller_status(ui.raylib_handle(), None);
             loop {
                 if log {
                     nes.clock(Some(&mut log_string))?;
@@ -200,7 +206,14 @@ fn nes_loop(mut nes: Nes, mut ui: AppUI) -> Result<(), Box<dyn Error>> {
             fps10_draw_ctrl = 6;
         }
 
-        if pfs.mem_edit_page_changed {
+        if ui
+            .raylib_handle()
+            .is_key_pressed(raylib::ffi::KeyboardKey::KEY_F)
+        {
+            dev_mode ^= true;
+        }
+
+        if pfs.mem_edit_page_changed && dev_mode {
             save_page(
                 pfs.mem_edit_current_page,
                 &mut nes.bus.borrow_mut(),
@@ -208,7 +221,7 @@ fn nes_loop(mut nes: Nes, mut ui: AppUI) -> Result<(), Box<dyn Error>> {
             );
         }
 
-        if log && !log_string.is_empty(){
+        if log && !log_string.is_empty() {
             print!("{}\n", log_string);
             log_string.clear();
         }
@@ -220,7 +233,7 @@ fn nes_loop(mut nes: Nes, mut ui: AppUI) -> Result<(), Box<dyn Error>> {
             fps10_draw_ctrl = 6;
         }
 
-        if frame_updated {
+        if frame_updated && dev_mode {
             if fps10_draw_ctrl == 6 {
                 get_ppu_info(
                     &mut nes,
@@ -241,6 +254,7 @@ fn nes_loop(mut nes: Nes, mut ui: AppUI) -> Result<(), Box<dyn Error>> {
         }
 
         let mut fs = FrameState {
+            dev_mode,
             screen: GameScreen {
                 update: frame_updated,
                 video_output: (screen_ptr, screen_len),
@@ -250,7 +264,7 @@ fn nes_loop(mut nes: Nes, mut ui: AppUI) -> Result<(), Box<dyn Error>> {
                 current_page: pfs.mem_edit_current_page,
                 search_byte_highlight: pfs.mem_edit_search_byte_highlight,
                 page_data: &mem_page,
-                modify_byte: None
+                modify_byte: None,
             },
             cpu_info: (&(nes.cpu)).into(),
             dissasembly: Dissassebly {
@@ -276,7 +290,6 @@ fn nes_loop(mut nes: Nes, mut ui: AppUI) -> Result<(), Box<dyn Error>> {
             nes.bus.borrow_mut().write(a, v)?;
         }
         pfs = PersistentFrameState::save_persistent_info(fs);
-
 
         step_frame = false;
         step_instruction = false;
@@ -305,8 +318,6 @@ fn nes_loop(mut nes: Nes, mut ui: AppUI) -> Result<(), Box<dyn Error>> {
 }
 
 fn init() -> Result<(Nes, AppUI), Box<dyn Error>> {
-
-    
     let mut light_mode = false;
     let mut light_flag = !0usize;
     for (i, s) in std::env::args().enumerate() {
@@ -316,26 +327,25 @@ fn init() -> Result<(Nes, AppUI), Box<dyn Error>> {
         }
     }
 
-    let app_ui =
-        if light_mode {
-            AppUI::with_theme(Theme {
-                bg: [0.95, 0.95, 0.9, 1.0],
-                darker_bg: [0.73, 0.73, 0.7, 1.0f32],
-                game_screen_bg: [0.95, 0.95, 0.9, 1.0],
-                label: [0.35, 0.35, 0.35, 1.0],
-                title: [0.25, 0.25, 0.25, 1.0],
-                signal_low: [0.8, 0.17, 0.17, 1.0],
-                signal_high: [0.17, 0.8, 0.17, 1.0],
-                highlight: [0.15, 0.65, 0.67, 0.9],
-                highlight2: [0.98, 0.902, 0.337, 0.9],
-                value: [0.0, 0.0, 0.0, 1.0],
-                button: [0.369, 0.361, 0.431, 1.0],
-            })
-        } else {
-            AppUI::new()
-        };
+    let app_ui = if light_mode {
+        AppUI::with_theme(Theme {
+            bg: [0.95, 0.95, 0.9, 1.0],
+            darker_bg: [0.73, 0.73, 0.7, 1.0f32],
+            game_screen_bg: [0.95, 0.95, 0.9, 1.0],
+            label: [0.35, 0.35, 0.35, 1.0],
+            title: [0.25, 0.25, 0.25, 1.0],
+            signal_low: [0.8, 0.17, 0.17, 1.0],
+            signal_high: [0.17, 0.8, 0.17, 1.0],
+            highlight: [0.15, 0.65, 0.67, 0.9],
+            highlight2: [0.98, 0.902, 0.337, 0.9],
+            value: [0.0, 0.0, 0.0, 1.0],
+            button: [0.369, 0.361, 0.431, 1.0],
+        })
+    } else {
+        AppUI::new()
+    };
     let mut args = std::env::args();
-    let _= args.next();
+    let _ = args.next();
     if light_flag == 1 {
         let _ = args.next();
     }
@@ -348,9 +358,7 @@ fn init() -> Result<(Nes, AppUI), Box<dyn Error>> {
                 .add_filter("any file", &["*"])
                 .pick_file();
             match file {
-                Some(p) => {
-                    p.as_os_str().to_owned()
-                }
+                Some(p) => p.as_os_str().to_owned(),
                 None => {
                     panic!("a");
                 }
@@ -381,8 +389,6 @@ fn init() -> Result<(Nes, AppUI), Box<dyn Error>> {
 
     // nes.cpu.registers.pc = 0xC000;
 
-
-    
     Ok((nes, app_ui))
 }
 
