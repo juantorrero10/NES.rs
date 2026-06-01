@@ -198,60 +198,74 @@ impl Cpu {
     }
 
     pub fn clock(&mut self, _: Option<&mut String>, nes: *mut Nes) {
+        // let _span = tracy_client::span!("Clock CPU");
         if self.state.cycles_left != 0 {
             self.state.cycles_left -= 1;
             self.state.clock_counter += 1;
+            return;
         }
 
         // Load up a new instruction
         self.set_flag(Flag6502::U, true);
 
+
         /*if let Some(out) = log {
-            Instruction6502::dissasemble_nestest_log(
+            Instruction6502::dissasemble(
                 self.registers.pc,
-                bus,
+                unsafe { nes.as_mut().unwrap() },
                 out,
             )
             .unwrap();
             write!(
                 out,
-                "A:{:02X} X:{:02X} Y:{:02X} P:{:02X} SP:{:02X} ",
+                "A:{:02X} X:{:02X} Y:{:02X} P:{:02X} SP:{:02X} CYC: {:02X}",
                 self.registers.a,
                 self.registers.x,
                 self.registers.y,
                 self.registers.sr,
-                self.registers.sp
+                self.registers.sp,
+                self.state.cycles_left,
             );
         }*/
 
         self.state.last_opcode = self.read(self.registers.pc, nes);
         self.registers.pc += 1;
 
-        let ins = INSTRUCTION_LUT[self.state.last_opcode as usize];
+        let ins = { 
+            // let _span = tracy_client::span!("Decoding");
+            INSTRUCTION_LUT[self.state.last_opcode as usize]
+        };
 
         self.state.cycles_left = ins.n_cycles;
 
         let nes_ref = unsafe {
-            nes.as_mut().expect(&format!("Could deref Nes pointer. {:?}", self))
+            // let _span = tracy_client::span!("Weird place");
+            nes.as_mut().unwrap()
         };
 
         // Execute addressing handler
         // Additional clock cycle if needed
-        let additional = ((ins.addressing_handler.get_fptr())(self, nes_ref).map_err(|e| {
-            log::error!(
-                "Failure on addressing handler: opc 0x{:02X}",
-                self.state.last_opcode
-            );
-            return CpuError::InstError(format!("{} => {}", ins.pneumonic, e));
-        })).unwrap();
+        let additional = {
+            // let _span = tracy_client::span!("Addressing");
+                ((ins.addressing_handler.get_fptr())(self, nes_ref).map_err(|e| {
+                log::error!(
+                    "Failure on addressing handler: opc 0x{:02X}",
+                    self.state.last_opcode
+                );
+                return CpuError::InstError(format!("{} => {}", ins.pneumonic, e));
+            })).unwrap() 
+        };
         // Execute instruction
-        let additional2 = (ins.instruction_handler)(self, nes_ref).map_err(|e| {
+        let additional2 = {
+
+            // let _span = tracy_client::span!("Instruction");
+            (ins.instruction_handler)(self, nes_ref).map_err(|e| {
             log::error!(
                 "Failure on instruction_handler handler: opc 0x{:02X}",
                 self.state.last_opcode
             );
             return CpuError::InstError(format!("{} => {}", ins.pneumonic, e));
-        }).unwrap();
+        }).unwrap() };
 
         if additional && additional2 {
             self.state.cycles_left += 1;

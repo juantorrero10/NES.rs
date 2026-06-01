@@ -3,11 +3,6 @@ const CHR_BANK_SIZE: usize = 8192;
 
 const NES_MAGIC: u32 = 0x1a53454e; // "NES\x1a"
 
-pub struct GameROMArtifacts {
-    pub cpu_mapper: Box<dyn CpuMapper>,
-    pub ppu_mapper: Box<dyn PpuMapper>,
-}
-
 #[repr(u8)]
 #[derive(Debug, Clone, Copy)]
 pub enum MemoryMirroring {
@@ -43,17 +38,20 @@ pub enum ROMErr {
     MapperNotImplemented(u8),
 }
 use std::{
-    ffi::{OsStr, OsString}, fs::File, io::{Read, Seek}, mem
+    ffi::{OsStr, OsString},
+    fs::File,
+    io::{Read, Seek},
+    mem,
 };
 
 use thiserror::Error;
 
 use crate::nes::{
     game_rom::ROMErr::MapperNotImplemented,
-    mapper::{CpuMapper, CpuMapper0, PpuMapper, PpuMapper0},
+    mapper::{MMC0, MMC3, Mapper},
 };
 
-pub fn load_rom(filepath: OsString) -> Result<GameROMArtifacts> {
+pub fn load_rom(filepath: OsString) -> Result<Box<dyn Mapper>> {
     let mut f = File::open(&filepath)?;
     let mut header = [0u8; size_of::<NesGameHeader>()];
     f.read(header.as_mut_slice())?;
@@ -89,38 +87,43 @@ pub fn load_rom(filepath: OsString) -> Result<GameROMArtifacts> {
     f.read_exact(prg_data.as_mut_slice())?;
     f.read_exact(chr_data.as_mut_slice())?;
 
-    let (cpu_mapper, ppu_mapper) = create_mappers(
+    Ok(create_mapper(
         mapper_id,
         header.prg_rom_chunks as usize,
         header.prg_rom_chunks as usize,
         header.prg_ram_size as usize,
         prg_data,
         chr_data,
-        mirror
-    )?;
-
-    Ok(GameROMArtifacts {
-        cpu_mapper,
-        ppu_mapper,
-    })
+        mirror,
+    )?)
 }
 
 #[allow(unused_variables)]
-fn create_mappers(
+fn create_mapper(
     mapper_id: u8,
     prg_banks: usize,
     chr_banks: usize,
     prg_ram_size: usize,
     prg_rom: Vec<u8>,
     chr_rom: Vec<u8>,
-    mirroring: MemoryMirroring
-) -> Result<(Box<dyn CpuMapper>, Box<dyn PpuMapper>)> {
+    mirroring: MemoryMirroring,
+) -> Result<Box<dyn Mapper>> {
     match mapper_id {
-        0 => Ok({
-            let cpum = Box::new(CpuMapper0::new(prg_rom, prg_banks, prg_ram_size));
-            let ppum = Box::new(PpuMapper0::new(chr_rom, mirroring));
-            (cpum, ppum)
-        }),
+        0 => Ok(Box::new(MMC0::new(
+            prg_rom,
+            prg_banks,
+            prg_ram_size,
+            chr_rom,
+            mirroring,
+        ))),
+        4 => Ok(Box::new(MMC3::new(
+            prg_rom,
+            prg_banks,
+            chr_banks,
+            prg_ram_size,
+            chr_rom,
+            mirroring
+        ))),
         _ => Err(MapperNotImplemented(mapper_id)),
     }
 }

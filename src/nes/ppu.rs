@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-use crate::nes::{Nes, bus_cpu::BusCpuError, game_rom::MemoryMirroring, mapper::PpuMapper, ppu};
+use crate::nes::{Nes, bus_cpu::BusCpuError, game_rom::MemoryMirroring, mapper::Mapper, ppu::{self, BusPpuTarget::{Memory, OpenBus}}};
 
 #[allow(unused)]
 pub const ADDR_CHR_START: u16 = 0x0000;
@@ -17,11 +17,17 @@ pub const SIZE_PALETTE: usize = 32;
 pub struct BusPpu {
     chips: BusPpuChips,
     palettes: [u8; SIZE_PALETTE],
+    open_bus_sim: u8,
     fake_value: u8,
 }
 
 pub struct BusPpuChips {
     nametables: [u8; 2 * SIZE_NAME_TBL],
+}
+
+pub enum BusPpuTarget<'a> {
+    Memory(&'a mut u8),
+    OpenBus
 }
 
 impl BusPpu {
@@ -31,15 +37,21 @@ impl BusPpu {
                 nametables: [0; 2 * SIZE_NAME_TBL],
             },
             palettes: [0; SIZE_PALETTE],
+            open_bus_sim: 0,
             fake_value: 0,
         }
     }
 
-    fn resolve_addr<'a>(&'a mut self, addr: u16, write: bool, mapper: &'a mut Box<dyn PpuMapper>) -> &'a mut u8 {
+    fn resolve_addr<'a>(
+        &'a mut self,
+        addr: u16,
+        write: bool,
+        mapper: &'a mut Box<dyn Mapper>,
+    ) -> BusPpuTarget<'a> {
         let mut mapped_addr = addr & 0x3FFF;
         // Mapper only acts on CHR-ROM data
-        if mapped_addr <= ADDR_NAME_END && mapper.need_intercept(addr) {
-            return mapper.intercept(addr, &mut self.chips, write);
+        if mapped_addr <= ADDR_NAME_END && mapper.ppu_need_intercept(addr) {
+            return mapper.ppu_intercept(addr, &mut self.chips, write);
         }
         match mapped_addr {
             ADDR_NAME_START..=ADDR_NAME_END => {
@@ -69,7 +81,7 @@ impl BusPpu {
                         panic!("Mirroring not implemented: {:?}", mapper.mirroring())
                     }
                 };
-                return self.chips.nametables.get_mut(addr_byte as usize).unwrap();
+                return Memory(self.chips.nametables.get_mut(addr_byte as usize).unwrap());
             }
             ADDR_PAL_START..=ADDR_PAL_END => {
                 mapped_addr &= (SIZE_PALETTE as u16) - 1;
@@ -81,20 +93,35 @@ impl BusPpu {
                 {
                     palette_idx &= 0x000F;
                 }
-                return self.palettes.get_mut(palette_idx as usize).unwrap();
+                return Memory(self.palettes.get_mut(palette_idx as usize).unwrap());
             }
             _ => {}
         }
         unreachable!();
     }
     #[inline(always)]
-    pub fn read(&mut self, addr: u16, mapper: &mut Box<dyn PpuMapper>) -> u8 {
-        *self.resolve_addr(addr, false, mapper)
+    pub fn read(&mut self, addr: u16, mapper: &mut Box<dyn Mapper>) -> u8 {
+        match self.resolve_addr(addr, false, mapper) {
+            Memory(r) => {
+                let d = *r;
+                self.open_bus_sim = d;
+                return d;
+            }
+            OpenBus => {
+                return self.open_bus_sim
+            }
+        }
     }
 
     #[inline(always)]
-    pub fn write(&mut self, addr: u16, data: u8, mapper: &mut Box<dyn PpuMapper>) {
-        *self.resolve_addr(addr, true, mapper) = data;
+    pub fn write(&mut self, addr: u16, data: u8, mapper: &mut Box<dyn Mapper>) {
+        self.open_bus_sim = data;
+        match self.resolve_addr(addr, false, mapper) {
+            Memory(r) => {
+                *r = data;
+            }
+            OpenBus => {}
+        }
     }
 }
 
@@ -244,6 +271,7 @@ type Result<T> = std::result::Result<T, PpuError>;
 // Main renderring implementation block
 impl Ppu {
     pub fn clock(&mut self, nes: *mut Nes) {
+        // let _span = tracy_client::span!("Clock PPU");
         // self.frame_complete = false;
         // Background register manipulation timeline.
         match self.scanline {
@@ -271,14 +299,7 @@ impl Ppu {
             _ => unreachable!(),
         }
 
-        let mut red_col = false;
-
-        if let Some(cyc) = self.fg_regs.sprite0_hit_scheduled
-            && cyc == self.cycle
-        {
-            self.status |= STATUS_SPRITE_0_HIT;
-            self.fg_regs.sprite0_hit_scheduled = None;
-        }
+        // let red_col;
 
         let (pal_idx, col_idx) = {
             let mut fg_pal = 0;
@@ -299,7 +320,7 @@ impl Ppu {
                 (bg_pal, bg_col) = self.extract_background_color();
             }
 
-            self.schedule_sprite0_hit(bg_col, fg_col, sprite_zero_rendered);
+            _ = self.check_sprite0_hit(bg_col, fg_col, sprite_zero_rendered);
 
             self.blend_colors((fg_pal, fg_col), (bg_pal, bg_col), fg_priority)
         };
@@ -310,11 +331,8 @@ impl Ppu {
         system_color_idx &= 0x3f;
         // FINALLY
 
-        let mut rbga_color = NES_COLOR_PALETTE[system_color_idx as usize];
+        let rbga_color = NES_COLOR_PALETTE[system_color_idx as usize];
 
-        if red_col {
-            rbga_color = [255, 0, 0];
-        }
         self.set_pixel(self.cycle, self.scanline, rbga_color);
 
         self.cycle += 1;
@@ -597,17 +615,23 @@ impl Ppu {
     }
 
     fn extract_background_color(&self) -> (u8, u8) {
+
         let mux = 0x8000 >> self.fine_x;
 
         let pixel_bit0 = (self.bg_regs.shift_pat_low & mux) > 0;
         let pixel_bit1 = (self.bg_regs.shift_pat_high & mux) > 0;
 
-        let pixel = (pixel_bit1 as u8) << 1 | (pixel_bit0 as u8);
+        let mut pixel = (pixel_bit1 as u8) << 1 | (pixel_bit0 as u8);
 
         let pal_bit0 = (self.bg_regs.shift_att_low & mux) > 0;
         let pal_bit1 = (self.bg_regs.shift_att_high & mux) > 0;
 
-        let palette = (pal_bit1 as u8) << 1 | (pal_bit0 as u8);
+        let mut palette = (pal_bit1 as u8) << 1 | (pal_bit0 as u8);
+
+        if self.cycle >= 1 && self.cycle <= 8 && (self.mask & MASK_RENDER_LEFT_BG) == 0 {
+            pixel = 0;
+            palette = 0;
+        }
 
         (palette, pixel)
     }
@@ -617,6 +641,7 @@ impl Ppu {
         let mut col_idx = 0;
         let mut priority = false;
         let mut is_zero_rendered = false;
+        
         for (i, spr) in self.fg_regs.sprites.iter().enumerate() {
             if spr.x_counter != 0 {
                 continue;
@@ -634,6 +659,10 @@ impl Ppu {
             is_zero_rendered = i == 0;
 
             break;
+        }
+        if self.cycle >= 1 && self.cycle <= 8 && (self.mask & MASK_RENDER_LEFT_SPR) == 0 {
+            pal_idx = 0;
+            col_idx = 0;
         }
         (pal_idx, col_idx, priority, is_zero_rendered)
     }
@@ -756,22 +785,26 @@ impl Ppu {
     }
 
     #[inline(always)]
-    fn schedule_sprite0_hit(&mut self, bg_col: u8, fg_col: u8, sprite_zero_rendered: bool) {
-        if bg_col > 0 && fg_col > 0 && self.cycle <= 256 {
+    fn check_sprite0_hit(&mut self, bg_col: u8, fg_col: u8, sprite_zero_rendered: bool) -> bool {
+        if bg_col > 0 && fg_col > 0 && self.cycle <= 256 && self.cycle != 255 {
             if self.fg_regs.sprite0_possible && sprite_zero_rendered {
-                if self.mask & (MASK_RENDER_LEFT_SPR | MASK_RENDER_LEFT_SPR) != 0 {
-                    if self.cycle >= 1
-                        && let None = self.fg_regs.sprite0_hit_scheduled
-                    {
-                        self.fg_regs.sprite0_hit_scheduled = Some(self.cycle)
+                if self.cycle >= 1 && self.cycle <= 8 {
+                    // For a hit to happen here, BOTH the left BG and left Sprite rendering must be enabled!
+                    let left_rendering_enabled = (self.mask & MASK_RENDER_LEFT_BG) != 0
+                        && (self.mask & MASK_RENDER_LEFT_SPR) != 0;
+
+                    if left_rendering_enabled {
+                        self.status |= STATUS_SPRITE_0_HIT;
+                        return true;
                     }
-                } else if self.cycle >= 9
-                    && let None = self.fg_regs.sprite0_hit_scheduled
-                {
-                    self.fg_regs.sprite0_hit_scheduled = Some(self.cycle)
+                } else if self.cycle >= 9 {
+                    // Past pixel 8, the clipping mask no longer restricts hits
+                    self.status |= STATUS_SPRITE_0_HIT;
+                    return true;
                 }
             }
         }
+        return false;
     }
 }
 

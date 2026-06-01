@@ -1,10 +1,8 @@
-use std::{error::Error, mem};
+use std::{error::Error};
 
 use thiserror::Error;
 
-use crate::nes::{
-    NesComm, NesEvent, bus_cpu::IOResult::{OkRead, OkWrite, TriggerEvent}, cpu::Flag6502::D, mapper::CpuMapper, ppu::PpuRegister, trigger_read_event, trigger_write_event
-};
+use crate::nes::{NesEvent, bus_cpu::IOResult::{OkRead, OkWrite, TriggerEvent}, mapper::Mapper, ppu::PpuRegister};
 
 // RAM Constants
 const ADDR_RAM_START: u16 = 0x0000;
@@ -58,7 +56,7 @@ pub struct BusCpuChips {
 
 type Result<T> = std::result::Result<T, BusCpuError>;
 
-pub enum BusTarget<'a> {
+pub enum BusCpuTarget<'a> {
     Memory(&'a mut u8),
     HardwareIntercept {
         // Some memory accesses dont lie behind clean containters. Instead they need a hardware device manage it.
@@ -67,16 +65,16 @@ pub enum BusTarget<'a> {
         // All interceptions requiere a mirrored simulated memory read/write in order to maintain them fresh.
         debug_simulated_target: *mut u8,
     },
+    OpenBus
 }
 
 pub enum IOResult {
     OkWrite,
     OkRead(u8),
     TriggerEvent(NesEvent, *mut u8),
-    DMATransfer(u8)
 }
 
-impl<'a> BusTarget<'a> {
+impl<'a> BusCpuTarget<'a> {
     fn unwrap_memory(self) -> &'a mut u8 {
         if let Memory(re) = self {
             return re;
@@ -85,7 +83,7 @@ impl<'a> BusTarget<'a> {
     }
 }
 
-use BusTarget::*;
+use BusCpuTarget::*;
 
 impl BusCpu {
     pub fn new() -> BusCpu {
@@ -111,13 +109,13 @@ impl BusCpu {
         write: bool,
         data: u8,
         trigger_events: bool,
-        mapper: &'a mut Box<dyn CpuMapper>
-    ) -> Result<BusTarget<'a>> {
+        mapper: &'a mut Box<dyn Mapper>
+    ) -> Result<BusCpuTarget<'a>> {
         let input_addr = addr;
         // Map address
 
-        if mapper.need_intercept(addr) {
-            return Ok(mapper.intercept(addr, &mut self.chips, write));
+        if mapper.cpu_need_intercept(addr) {
+            return Ok(mapper.cpu_intercept(addr, &mut self.chips, write));
         }
 
         match input_addr {
@@ -210,7 +208,7 @@ impl BusCpu {
     }
 
     #[inline(always)]
-    pub fn read<'a>(&'a mut self, addr: u16, mapper: &'a mut Box<dyn CpuMapper>) -> Result<IOResult> {
+    pub fn read<'a>(&'a mut self, addr: u16, mapper: &'a mut Box<dyn Mapper>) -> Result<IOResult> {
         let data_ret;
         match self.bus_operation(addr, false, 0, true, mapper)? {
             // Handle it here if it doesnt need further intervention
@@ -225,19 +223,22 @@ impl BusCpu {
             } => {
                 Ok(TriggerEvent(event, debug_simulated_target))
             }
+            OpenBus => {
+                Ok(OkRead(self.open_bus_sim_reg))
+            }
         }
     }
 
     /// Read 16bit number (little endian, LSB first)
     #[inline(always)]
-    pub fn read16<'a>(&'a mut self, addr: u16, mapper: &'a mut Box<dyn CpuMapper>) -> Result<(IOResult, IOResult)> {
+    pub fn read16<'a>(&'a mut self, addr: u16, mapper: &'a mut Box<dyn Mapper>) -> Result<(IOResult, IOResult)> {
         let result_lo = self.read(addr, mapper)?;
         let result_hi = self.read(addr + 1, mapper)?;
         Ok((result_lo, result_hi))
     }
 
     #[inline(always)]
-    pub fn write<'a>(&'a mut self, addr: u16, data: u8, mapper: &'a mut Box<dyn CpuMapper>) -> Result<IOResult> {
+    pub fn write<'a>(&'a mut self, addr: u16, data: u8, mapper: &'a mut Box<dyn Mapper>) -> Result<IOResult> {
         match self.bus_operation(addr, true, data, true, mapper)? {
             Memory(r) => {
                 *r = data;
@@ -250,16 +251,17 @@ impl BusCpu {
             } => {
                 Ok(TriggerEvent(event, debug_simulated_target))
             }
+            OpenBus => Ok(OkWrite)
         }
     }
 
     #[inline(always)]
-    pub fn debug_read<'a>(&mut self, addr: u16, mapper: &'a mut Box<dyn CpuMapper>) -> Result<u8> {
+    pub fn debug_read<'a>(&mut self, addr: u16, mapper: &'a mut Box<dyn Mapper>) -> Result<u8> {
         return Ok(*(self.bus_operation(addr, false, 0, false, mapper)?.unwrap_memory()));
     }
 
     #[inline(always)]
-    pub fn debug_read16<'a>(&mut self, addr: u16, mapper: &'a mut Box<dyn CpuMapper>) -> Result<u16> {
+    pub fn debug_read16<'a>(&mut self, addr: u16, mapper: &'a mut Box<dyn Mapper>) -> Result<u16> {
         Ok((self.debug_read(addr, mapper)? as u16) | (self.debug_read(addr + 1, mapper)? as u16) << 8)
     }
 }

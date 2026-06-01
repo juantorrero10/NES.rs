@@ -1,5 +1,10 @@
 //#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+//use tracy_client::ProfiledAllocator;
+
+//#[global_allocator]
+//static GLOBAL: ProfiledAllocator<std::alloc::System> = ProfiledAllocator::new(std::alloc::System, 0);
+
 use std::{
     collections::HashMap,
     error::Error,
@@ -15,7 +20,7 @@ use raylib::ffi::KeyboardKey;
 use simple_logger::SimpleLogger;
 
 use crate::{
-    nes::{Nes, bus_cpu::BusCpu, instruction_set::Instruction6502},
+    nes::{Nes, NesError, bus_cpu::BusCpu, instruction_set::Instruction6502},
     ui::{
         AppUI, Theme,
         framestate::{
@@ -35,7 +40,7 @@ enum RunMode {
 }
 
 fn get_dissasembly(
-    bus: &mut BusCpu,
+    nes: &mut Nes,
     hm: &mut HashMap<u16, (usize, usize, u16)>,
     buff: &mut String,
     force_syncronize: Option<u16>,
@@ -49,7 +54,7 @@ fn get_dissasembly(
     while i <= 0xFFFF {
         let addr = i as u16;
         old_len = buff.len();
-        match Instruction6502::dissasemble(addr, bus, buff) {
+        match Instruction6502::dissasemble(addr, nes, buff) {
             Ok(v) => {
                 jump = v as u16;
                 if let Some(a) = force_syncronize {
@@ -73,9 +78,9 @@ fn get_dissasembly(
     }
 }
 
-fn save_page(page_num: u8, bus: &mut BusCpu, out_buff: &mut [Option<u8>]) {
+fn save_page(page_num: u8, nes: &mut Nes, out_buff: &mut [Option<u8>]) {
     for j in 0..256 {
-        out_buff[j] = bus.debug_read((page_num as u16) << 8 | j as u16).ok()
+        out_buff[j] = nes.debug_read((page_num as u16) << 8 | j as u16).ok()
     }
 }
 
@@ -86,13 +91,13 @@ fn get_ppu_info(
     out_chr1: &mut [u8; 128 * 128 * 4],
     out_pal: &mut [[[u8; 4]; 4]; 8],
 ) {
-    let mut ppu = nes.ppu.borrow_mut();
-    ppu.debug_extract_sprite_canvas(0, selected_palette, None, out_chr0);
-    ppu.debug_extract_sprite_canvas(1, selected_palette, None, out_chr1);
-    ppu.debug_extract_palettes(&mut *out_pal);
+    let nes_ptr = std::ptr::from_mut(nes);
+    nes.ppu.debug_extract_sprite_canvas(0, selected_palette, None, nes_ptr, out_chr0);
+    nes.ppu.debug_extract_sprite_canvas(1, selected_palette, None, nes_ptr, out_chr1);
+    nes.ppu.debug_extract_palettes(&mut *out_pal, nes_ptr);
 }
 
-fn nes_loop(mut nes: Nes, mut ui: AppUI) -> Result<(), Box<dyn Error>> {
+fn nes_loop(mut nes: Box<Nes>, mut ui: AppUI) -> Result<(), Box<dyn Error>> {
     let mut dissasembly = String::with_capacity(65536);
     let mut mem_page = [None; 256];
     let mut pfs = PersistentFrameState::default();
@@ -124,7 +129,7 @@ fn nes_loop(mut nes: Nes, mut ui: AppUI) -> Result<(), Box<dyn Error>> {
     // let mut phase = 0.0f32;
 
     // It is a pointer+len pair because we can guarantee that this will be valid for ever.
-    let (screen_ptr, screen_len) = nes.ppu.borrow().get_screen();
+    let (screen_ptr, screen_len) = nes.ppu.get_screen();
 
     while !ui.raylib_handle().window_should_close() {
         let t0 = Instant::now();
@@ -158,32 +163,17 @@ fn nes_loop(mut nes: Nes, mut ui: AppUI) -> Result<(), Box<dyn Error>> {
         // Pressing V to jump a frame or Simulation Speed
         if step_frame {
             nes.controller
-                .borrow_mut()
                 .update_controller_status(ui.raylib_handle(), None);
-            loop {
-                if log {
-                    nes.clock(Some(&mut log_string))?;
-                } else {
-                    nes.clock(None)?;
-                }
-                if let Some(a) = bkpt
-                    && a == nes.cpu.get_pc()
-                {
-                    sim = RunMode::Stopped;
-                    break;
-                }
-                if nes.ppu.borrow().frame_complete {
-                    break;
-                }
-                // Burn remaining cpu cycles
-                while nes.cpu.state.cycles_left != 0 {
-                    nes.cpu.clock(None)?;
-                }
+
+            if nes.step_frame(bkpt)? {
+                sim = RunMode::Stopped;
             }
             frame_updated = true;
             pfs.mem_edit_page_changed = true;
             // Stepping just one by pressing S
         } else if step_instruction {
+            // log::info!("a");
+            let mut c = 0;
             let mut started_next = nes.cpu.state.cycles_left > 0;
             loop {
                 //log::info!("a CL{}", nes.cpu.state.cycles_left);
@@ -192,9 +182,14 @@ fn nes_loop(mut nes: Nes, mut ui: AppUI) -> Result<(), Box<dyn Error>> {
                 } else {
                     nes.clock(None)?;
                 }
-
+                c += 1;
+                // dbg!(nes.cpu.state.cycles_left, started_next);
                 if !started_next && nes.cpu.state.cycles_left > 0 {
                     started_next = true;
+                }
+
+                if c >= 16 {
+                    break;
                 }
 
                 if started_next && nes.cpu.state.cycles_left == 0 {
@@ -216,15 +211,15 @@ fn nes_loop(mut nes: Nes, mut ui: AppUI) -> Result<(), Box<dyn Error>> {
         if pfs.mem_edit_page_changed && dev_mode {
             save_page(
                 pfs.mem_edit_current_page,
-                &mut nes.bus.borrow_mut(),
+                &mut nes,
                 &mut mem_page,
             );
         }
 
-        if log && !log_string.is_empty() {
-            print!("{}\n", log_string);
-            log_string.clear();
-        }
+        // if log && !log_string.is_empty() {
+        //     print!("{}\n", log_string);
+        //     log_string.clear();
+        // }
 
         if ui.raylib_handle().is_key_pressed(KeyboardKey::KEY_P) {
             selected_palette += 1;
@@ -245,11 +240,12 @@ fn nes_loop(mut nes: Nes, mut ui: AppUI) -> Result<(), Box<dyn Error>> {
                 fps10_draw_ctrl = 0;
             }
             fps10_draw_ctrl += 1;
+            let pc = Some(nes.cpu.get_pc());
             get_dissasembly(
-                &mut nes.bus.borrow_mut(),
+                &mut nes,
                 &mut ins_mapping,
                 &mut dissasembly,
-                Some(nes.cpu.get_pc()),
+                pc,
             );
         }
 
@@ -287,7 +283,7 @@ fn nes_loop(mut nes: Nes, mut ui: AppUI) -> Result<(), Box<dyn Error>> {
         fs = ui.update(fs);
         bkpt = fs.dissasembly.bkpt;
         if let Some((a, v)) = fs.memory_editor.modify_byte {
-            nes.bus.borrow_mut().write(a, v)?;
+            nes.write(a, v)?;
         }
         pfs = PersistentFrameState::save_persistent_info(fs);
 
@@ -317,8 +313,8 @@ fn nes_loop(mut nes: Nes, mut ui: AppUI) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// Automatically called before main.
-fn nes_init() -> Nes {
+// CRASH JUST AS I ENTER
+fn nes_init() -> Result<Box<Nes>, NesError> {
     let mut args = std::env::args();
     while let Some(s) = args.next() && s.starts_with("--") {}
 
@@ -337,18 +333,16 @@ fn nes_init() -> Nes {
             }
         }
     };
-    let mut nes = Nes::new(rom_path)?;
+    let mut nes = Box::new(Nes::new(rom_path)?);
     nes.reset();
-    nes
+    Ok(nes)
 }
 
-fn init() -> Result<(Nes, AppUI), Box<dyn Error>> {
+fn app_init() -> AppUI {
     let mut light_mode = false;
-    let mut light_flag = !0usize;
     for (i, s) in std::env::args().enumerate() {
         if s == "--light" {
             light_mode = true;
-            light_flag = i;
         }
     }
 
@@ -369,55 +363,12 @@ fn init() -> Result<(Nes, AppUI), Box<dyn Error>> {
     } else {
         AppUI::new()
     };
-    let mut args = std::env::args();
-    let _ = args.next();
-    if light_flag == 1 {
-        let _ = args.next();
-    }
+    app_ui
 
-    let rom_path = match args.next() {
-        Some(f) => OsString::from(&f),
-        _ => {
-            let file = rfd::FileDialog::new()
-                .add_filter("NES ROM", &["nes", "rom"])
-                .add_filter("any file", &["*"])
-                .pick_file();
-            match file {
-                Some(p) => p.as_os_str().to_owned(),
-                None => {
-                    panic!("a");
-                }
-            }
-        }
-    };
-    let mut nes = Nes::new(rom_path)?;
-    /*
-        *=$8000
-        LDX #10
-        STX $0000
-        LDX #3
-        STX $0001
-        LDY $0000
-        LDA #0
-        CLC
-        loop
-        ADC $0001
-        DEY
-        BNE loop
-        STA $0002
-        NOP
-        NOP
-        NOP
-    */
-
-    nes.reset()?;
-
-    // nes.cpu.registers.pc = 0xC000;
-
-    Ok((nes, app_ui))
 }
 
 fn main() {
+    dbg!(size_of::<Nes>());
     SimpleLogger::new()
         .with_level(log::LevelFilter::Info)
         .with_timestamp_format(time::macros::format_description!(
@@ -427,16 +378,16 @@ fn main() {
         .init()
         .expect("Failure: Logger failed");
 
-    match init() {
+    match nes_init() {
         Err(e) => eprintln!(
             "{} {}: {}",
             "Start-up".blue().italic(),
             "NES Emulator panicked!".red().bold(),
             e
         ),
-        Ok((n, ui)) => {
+        Ok(n) => {
             log::info!("Emulator initialized.");
-            match nes_loop(n, ui) {
+            match nes_loop(n, app_init()) {
                 Err(e) => println!(
                     "{} {}: {}",
                     "Runtime".green().italic(),
