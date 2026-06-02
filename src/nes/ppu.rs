@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-use crate::nes::{Nes, bus_cpu::BusCpuError, game_rom::MemoryMirroring, mapper::Mapper, ppu::{self, BusPpuTarget::{Memory, OpenBus}}};
+use crate::nes::{Nes, bus_cpu::BusCpuError, game_rom::MemoryMirroring, mapper_base::Mapper, ppu::{self, BusPpuTarget::{Memory, OpenBus}}};
 
 #[allow(unused)]
 pub const ADDR_CHR_START: u16 = 0x0000;
@@ -15,6 +15,7 @@ pub const ADDR_PAL_END: u16 = 0x3FFF;
 pub const SIZE_PALETTE: usize = 32;
 
 pub struct BusPpu {
+    pub address_bus: u16,
     chips: BusPpuChips,
     palettes: [u8; SIZE_PALETTE],
     open_bus_sim: u8,
@@ -37,6 +38,7 @@ impl BusPpu {
                 nametables: [0; 2 * SIZE_NAME_TBL],
             },
             palettes: [0; SIZE_PALETTE],
+            address_bus: 0,
             open_bus_sim: 0,
             fake_value: 0,
         }
@@ -45,14 +47,24 @@ impl BusPpu {
     fn resolve_addr<'a>(
         &'a mut self,
         addr: u16,
+        data: u8,
         write: bool,
         mapper: &'a mut Box<dyn Mapper>,
+        update_address_bus: bool
     ) -> BusPpuTarget<'a> {
         let mut mapped_addr = addr & 0x3FFF;
-        // Mapper only acts on CHR-ROM data
-        if mapped_addr <= ADDR_NAME_END && mapper.ppu_need_intercept(addr) {
-            return mapper.ppu_intercept(addr, &mut self.chips, write);
+    
+        //log::info!("Addr down: {:014b}, address_bus: {:014b}, prev_address_bus: {:014b}", addr, self.address_bus, self.prev_address_bus);
+
+        let prev_addr = self.address_bus;
+        if mapped_addr <= ADDR_CHR_END && update_address_bus {
+            self.address_bus = addr;
         }
+
+        if mapped_addr <= ADDR_CHR_END && mapper.ppu_need_intercept(addr) {
+            return mapper.ppu_intercept(addr, &mut self.chips, data, write);
+        }
+
         match mapped_addr {
             ADDR_NAME_START..=ADDR_NAME_END => {
                 // Addresses 0x3000 - 0x3EFF are mirrored to 0x2000 - 0x2EFF
@@ -101,7 +113,7 @@ impl BusPpu {
     }
     #[inline(always)]
     pub fn read(&mut self, addr: u16, mapper: &mut Box<dyn Mapper>) -> u8 {
-        match self.resolve_addr(addr, false, mapper) {
+        match self.resolve_addr(addr, 0, false, mapper, true) {
             Memory(r) => {
                 let d = *r;
                 self.open_bus_sim = d;
@@ -116,13 +128,14 @@ impl BusPpu {
     #[inline(always)]
     pub fn write(&mut self, addr: u16, data: u8, mapper: &mut Box<dyn Mapper>) {
         self.open_bus_sim = data;
-        match self.resolve_addr(addr, false, mapper) {
+        match self.resolve_addr(addr, data, false, mapper, true) {
             Memory(r) => {
                 *r = data;
             }
             OpenBus => {}
         }
     }
+
 }
 
 const SCREEN_WIDTH: usize = 256;
@@ -270,7 +283,12 @@ type Result<T> = std::result::Result<T, PpuError>;
 
 // Main renderring implementation block
 impl Ppu {
-    pub fn clock(&mut self, nes: *mut Nes) {
+    pub fn clock(&mut self, nes: *mut Nes, mapper: &mut Box<dyn Mapper>) {
+
+        if let Some(e) = mapper.on_ppu_clock() {
+            let instance = unsafe { nes.as_mut().unwrap() };
+            instance.trigger_event(e).expect("Event failed on PPU Clock hook");
+        }
         // let _span = tracy_client::span!("Clock PPU");
         // self.frame_complete = false;
         // Background register manipulation timeline.
@@ -299,7 +317,7 @@ impl Ppu {
             _ => unreachable!(),
         }
 
-        // let red_col;
+        let red_col;
 
         let (pal_idx, col_idx) = {
             let mut fg_pal = 0;
@@ -320,7 +338,7 @@ impl Ppu {
                 (bg_pal, bg_col) = self.extract_background_color();
             }
 
-            _ = self.check_sprite0_hit(bg_col, fg_col, sprite_zero_rendered);
+            red_col = self.check_sprite0_hit(bg_col, fg_col, sprite_zero_rendered);
 
             self.blend_colors((fg_pal, fg_col), (bg_pal, bg_col), fg_priority)
         };
@@ -331,7 +349,11 @@ impl Ppu {
         system_color_idx &= 0x3f;
         // FINALLY
 
-        let rbga_color = NES_COLOR_PALETTE[system_color_idx as usize];
+        let mut rbga_color = NES_COLOR_PALETTE[system_color_idx as usize];
+
+        if red_col {
+            rbga_color = [255, 0, 0]
+        }
 
         self.set_pixel(self.cycle, self.scanline, rbga_color);
 

@@ -38,7 +38,7 @@ pub enum ROMErr {
     MapperNotImplemented(u8),
 }
 use std::{
-    ffi::{OsStr, OsString},
+    ffi::{OsString},
     fs::File,
     io::{Read, Seek},
     mem,
@@ -48,7 +48,7 @@ use thiserror::Error;
 
 use crate::nes::{
     game_rom::ROMErr::MapperNotImplemented,
-    mapper::{MMC0, MMC3, Mapper},
+    mapper_base::Mapper, mappers::{mmc0::MMC0, mmc3::MMC3},
 };
 
 pub fn load_rom(filepath: OsString) -> Result<Box<dyn Mapper>> {
@@ -89,8 +89,6 @@ pub fn load_rom(filepath: OsString) -> Result<Box<dyn Mapper>> {
 
     Ok(create_mapper(
         mapper_id,
-        header.prg_rom_chunks as usize,
-        header.prg_rom_chunks as usize,
         header.prg_ram_size as usize,
         prg_data,
         chr_data,
@@ -101,8 +99,6 @@ pub fn load_rom(filepath: OsString) -> Result<Box<dyn Mapper>> {
 #[allow(unused_variables)]
 fn create_mapper(
     mapper_id: u8,
-    prg_banks: usize,
-    chr_banks: usize,
     prg_ram_size: usize,
     prg_rom: Vec<u8>,
     chr_rom: Vec<u8>,
@@ -111,15 +107,12 @@ fn create_mapper(
     match mapper_id {
         0 => Ok(Box::new(MMC0::new(
             prg_rom,
-            prg_banks,
             prg_ram_size,
             chr_rom,
             mirroring,
         ))),
         4 => Ok(Box::new(MMC3::new(
             prg_rom,
-            prg_banks,
-            chr_banks,
             prg_ram_size,
             chr_rom,
             mirroring

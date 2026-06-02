@@ -21,6 +21,10 @@ pub struct PpuInfo<'a> {
     pub chr_bank_1: &'a [u8],
     pub palettes: [[[u8; 4]; 4]; 8],
     pub selected_palette: u16,
+    pub toggle_mapper: bool,
+    pub display_mapper_info: bool,
+    pub mapper_info: &'a str,
+
 }
 pub struct GameScreen {
     pub update: bool,

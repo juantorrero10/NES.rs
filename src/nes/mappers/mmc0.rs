@@ -1,0 +1,91 @@
+use super::*;
+
+macro_rules! rom {
+    ($self:expr, $write:expr, $read_ret:expr) => {
+        match $write {
+            true => BusCpuTarget::OpenBus,
+            false => BusCpuTarget::Memory($read_ret),
+        }
+    };
+}
+
+macro_rules! ppu_rom {
+    ($self:expr, $write:expr, $read_ret:expr) => {
+        match $write {
+            true => BusPpuTarget::OpenBus,
+            false => BusPpuTarget::Memory($read_ret),
+        }
+    };
+}
+
+#[derive(Clone)]
+pub struct MMC0 {
+    prg_ram: Vec<u8>,
+    prg_rom: Vec<u8>,
+    chr_rom: Vec<u8>,
+    mirroring: MemoryMirroring,
+}
+
+impl MMC0 {
+    pub fn new(
+        prg_rom: Vec<u8>,
+        mut prg_ram_size: usize,
+        chr_rom: Vec<u8>,
+        mirroring: MemoryMirroring,
+    ) -> Self {
+        if prg_ram_size == 0 {
+            prg_ram_size = 8192;
+        }
+        MMC0 {
+            prg_rom,
+            chr_rom,
+            prg_ram: vec![0u8; prg_ram_size],
+            mirroring,
+        }
+    }
+}
+
+impl Mapper for MMC0 {
+    fn cpu_need_intercept(&mut self, addr: u16) -> bool {
+        return addr >= 0x6000;
+    }
+    fn cpu_intercept<'a>(
+        &'a mut self,
+        addr: u16,
+        _: &'a mut BusCpuChips,
+        _: u8,
+        write: bool,
+    ) -> BusCpuTarget<'a> {
+        match addr {
+            0x6000..=0x7FFF => BusCpuTarget::Memory(&mut self.prg_ram[addr as usize - 0x6000]),
+            0x8000..=0xBFFF => rom!(self, write, &mut self.prg_rom[addr as usize - 0x8000]),
+            0xC000..=0xFFFF => {
+                let rom_size = self.prg_rom.len();
+                rom!(
+                    self,
+                    write,
+                    &mut self.prg_rom
+                        [addr as usize - if rom_size > 16384 { 0x8000 } else { 0xC000 }]
+                )
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    fn ppu_need_intercept(&mut self, addr: u16) -> bool {
+        return addr <= ADDR_CHR_END;
+    }
+    fn ppu_intercept<'a>(
+        &'a mut self,
+        addr: u16,
+        _: &'a mut BusPpuChips,
+        _: u8,
+        write: bool,
+    ) -> BusPpuTarget<'a> {
+        ppu_rom!(self, write, &mut self.chr_rom[addr as usize])
+    }
+
+    fn mirroring(&self) -> MemoryMirroring {
+        self.mirroring
+    }
+}

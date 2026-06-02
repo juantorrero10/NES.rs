@@ -2,13 +2,7 @@ use std::{cell::RefCell, error::Error, ffi::OsString, fmt::Write, rc::Rc};
 use thiserror::Error;
 
 use crate::nes::{
-    apu::Apu,
-    bus_cpu::{BusCpu, BusCpuError, IOResult},
-    controller::Controller,
-    cpu::{Cpu, CpuError},
-    game_rom::ROMErr,
-    mapper::Mapper,
-    ppu::{BusPpu, BusPpuChips, Ppu, PpuError, PpuRegister, ppu_flags::STATUS_VBLANK},
+    NesEvent::InfoReq, apu::Apu, bus_cpu::{BusCpu, BusCpuError, IOResult}, controller::Controller, cpu::{Cpu, CpuError}, game_rom::ROMErr, mapper_base::Mapper, ppu::{BusPpu, BusPpuChips, Ppu, PpuError, PpuRegister, ppu_flags::STATUS_VBLANK}
 };
 
 mod apu;
@@ -17,8 +11,10 @@ pub mod controller;
 pub mod cpu;
 mod game_rom;
 pub mod instruction_set;
-mod mapper;
+mod mapper_base;
 mod ppu;
+
+mod mappers;
 
 pub struct Nes {
     pub cpu: Cpu,
@@ -90,7 +86,7 @@ impl Nes {
         match r {
             IOResult::OkRead(data) => Ok(data),
             IOResult::TriggerEvent(e, debug_backup) => {
-                let d = self.trigger_read_event(e)?;
+                let d = self.trigger_event(e)?.expect("Read event returned no data");
                 unsafe {
                     *debug_backup = d;
                 }
@@ -105,7 +101,7 @@ impl Nes {
         match r {
             IOResult::OkWrite => Ok(()),
             IOResult::TriggerEvent(e, debug_backup) => {
-                self.trigger_write_event(e, data)?;
+                self.trigger_event(e)?;
                 unsafe {
                     *debug_backup = data;
                 }
@@ -161,9 +157,9 @@ impl Nes {
         let instance = std::ptr::from_mut(self);
 
         self.ppu.frame_complete = false;
-        self.ppu.clock(instance);
-        self.ppu.clock(instance);
-        self.ppu.clock(instance);
+        self.ppu.clock(instance, &mut self.mapper);
+        self.ppu.clock(instance, &mut self.mapper);
+        self.ppu.clock(instance, &mut self.mapper);
         self.ppu_cpu_clock_frequency += 1;
 
         let nmi_signal = self.ppu.nmi_signal;
@@ -171,7 +167,7 @@ impl Nes {
             self.cpu.nmi(instance);
             self.ppu.nmi_signal = false;
         }
-        self.cpu.clock(None, instance);
+        self.cpu.clock(None, instance, &mut self.mapper);
 
         Ok(())
     }
@@ -222,49 +218,67 @@ impl Nes {
 
 // Communication between components
 #[derive(Debug)]
-enum NesEvent {
-    PpuRegWrittenTo(PpuRegister),
+pub enum NesEvent {
+    PpuRegWrittenTo(PpuRegister, u8),
     PpuRegReadFrom(PpuRegister),
     OAMDMATransfer(u8),
     ControllerReadFrom(u16),
-    ControllerWrittenTo,
-    ApuWrittenTo(u16),
+    ControllerWrittenTo(u8),
+    ApuWrittenTo(u16, u8),
     ApuReadFrom(u16),
+    InfoReq(MapperInfoReq)
+}
+
+#[derive(Debug)]
+pub enum MapperInfoReq {
+    PpuAddressBus
 }
 
 // Event logic
 impl Nes {
-    fn trigger_read_event(&mut self, e: NesEvent) -> std::result::Result<u8, Box<dyn Error>> {
-        let instance = std::ptr::from_mut(self);
-        match e {
-            NesEvent::PpuRegReadFrom(r) => Ok(self.ppu.event_cpu_has_read(r, instance)?),
-            NesEvent::ControllerReadFrom(addr) => Ok(self.controller.event_cpu_has_read(addr)),
-            NesEvent::ApuReadFrom(addr) => Ok(self.apu.event_cpu_has_read(addr)),
-            _ => Err(Box::new(NesError::UnhandledEvent(e))),
-        }
-    }
 
-    fn trigger_write_event(
+    #[allow(unreachable_patterns)]
+    pub fn trigger_event(
         &mut self,
         e: NesEvent,
-        data: u8,
-    ) -> std::result::Result<(), Box<dyn Error>> {
+    ) -> std::result::Result<Option<u8>, Box<dyn Error>> {
         let instance = std::ptr::from_mut(self);
         match e {
-            NesEvent::PpuRegWrittenTo(r) => {
-                Ok(self.ppu.event_cpu_has_written(r, data, instance)?)
+            NesEvent::PpuRegWrittenTo(r, data) => {
+                self.ppu.event_cpu_has_written(r, data, instance)?;
+                Ok(None)
             }
-            NesEvent::ApuWrittenTo(addr) => Ok(self.apu.event_cpu_has_written(addr, data)),
-            NesEvent::ControllerWrittenTo => Ok(self.controller.event_cpu_has_written(data)),
+            NesEvent::ApuWrittenTo(addr, data) => {
+                self.apu.event_cpu_has_written(addr, data);
+                Ok(None)
+            },
+            NesEvent::ControllerWrittenTo(data) => { 
+                self.controller.event_cpu_has_written(data);
+                Ok(None)
+            },
             NesEvent::OAMDMATransfer(addr_start) => {
                 let page = (addr_start as u16) << 8;
                 for i in 0..256 {
                     self.oam_dma_buffer[i] = self.read(page + i as u16)?;
                 }
-                Ok(self
+                self
                     .ppu
-                    .event_oam_dma_transfer(self.oam_dma_buffer.as_slice())?)
+                    .event_oam_dma_transfer(self.oam_dma_buffer.as_slice())?;
+                Ok(None)
             }
+            NesEvent::InfoReq(i) =>{
+                match i {
+                    MapperInfoReq::PpuAddressBus => {
+                        // log::info!("Info request: \n\tPrev: {:014b}\n\tCurr: {:014b}", self.bus_ppu.prev_address_bus, self.bus_ppu.address_bus);
+                        let response = self.bus_ppu.address_bus as u64;
+                        self.mapper.info_request_response(i, Some(response));
+                    }
+                }
+                Ok(None)
+            }
+            NesEvent::PpuRegReadFrom(r) => Ok(Some(self.ppu.event_cpu_has_read(r, instance)?)),
+            NesEvent::ControllerReadFrom(addr) => Ok(Some(self.controller.event_cpu_has_read(addr))),
+            NesEvent::ApuReadFrom(addr) => Ok(Some(self.apu.event_cpu_has_read(addr))),
             _ => Err(Box::new(NesError::UnhandledEvent(e))),
         }
     }

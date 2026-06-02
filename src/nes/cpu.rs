@@ -4,6 +4,7 @@ use std::fmt::{Debug, Write};
 use colored::Colorize;
 use thiserror::Error;
 
+use crate::nes::mapper_base::Mapper;
 use crate::nes::{Nes, NesError};
 use crate::nes::bus_cpu::{BusCpu, BusCpuError};
 use crate::nes::instruction_set::{
@@ -197,7 +198,18 @@ impl Cpu {
         self.read(STACK_TOP + self.registers.sp as u16, nes)
     }
 
-    pub fn clock(&mut self, _: Option<&mut String>, nes: *mut Nes) {
+    pub fn clock(&mut self, _: Option<&mut String>, nes: *mut Nes, mapper: &mut Box<dyn Mapper>) {
+        
+        if let Some(e) = mapper.on_cpu_clock() {
+            let instance = unsafe { nes.as_mut().unwrap() };
+            instance.trigger_event(e);
+        }
+
+        if mapper.is_irq_pending() && !self.get_flag(Flag6502::I){
+            self.irq(nes);
+            mapper.irq_clear();
+        }
+
         // let _span = tracy_client::span!("Clock CPU");
         if self.state.cycles_left != 0 {
             self.state.cycles_left -= 1;

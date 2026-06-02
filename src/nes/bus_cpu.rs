@@ -2,7 +2,7 @@ use std::{error::Error};
 
 use thiserror::Error;
 
-use crate::nes::{NesEvent, bus_cpu::IOResult::{OkRead, OkWrite, TriggerEvent}, mapper::Mapper, ppu::PpuRegister};
+use crate::nes::{NesEvent, bus_cpu::IOResult::{OkRead, OkWrite, TriggerEvent}, mapper_base::Mapper, ppu::PpuRegister};
 
 // RAM Constants
 const ADDR_RAM_START: u16 = 0x0000;
@@ -115,7 +115,7 @@ impl BusCpu {
         // Map address
 
         if mapper.cpu_need_intercept(addr) {
-            return Ok(mapper.cpu_intercept(addr, &mut self.chips, write));
+            return Ok(mapper.cpu_intercept(addr, &mut self.chips, data, write));
         }
 
         match input_addr {
@@ -140,7 +140,7 @@ impl BusCpu {
                 if trigger_events {
                     return if write {
                         Ok(HardwareIntercept {
-                            event: NesEvent::PpuRegWrittenTo(PpuRegister::from_0_to_7(addr)),
+                            event: NesEvent::PpuRegWrittenTo(PpuRegister::from_0_to_7(addr), data),
                             debug_simulated_target,
                         })
                     } else {
@@ -166,7 +166,7 @@ impl BusCpu {
                     if write {
                         return match addr {
                             0x4000..=0x4013 | 0x4015 | 0x4017 => Ok(HardwareIntercept {
-                                event: NesEvent::ApuWrittenTo(addr),
+                                event: NesEvent::ApuWrittenTo(addr, data),
                                 debug_simulated_target: get_simulated!(addr),
                             }),
                             // OAM DMA transfer
@@ -177,7 +177,7 @@ impl BusCpu {
                                 })
                             }
                             0x4016 => Ok(HardwareIntercept {
-                                event: NesEvent::ControllerWrittenTo,
+                                event: NesEvent::ControllerWrittenTo(data),
                                 debug_simulated_target: get_simulated!(addr),
                             }),
                             _ => Ok(Memory(&mut self.open_bus_sim_reg)),

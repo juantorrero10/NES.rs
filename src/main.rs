@@ -125,6 +125,10 @@ fn nes_loop(mut nes: Box<Nes>, mut ui: AppUI) -> Result<(), Box<dyn Error>> {
 
     let mut dev_mode = false;
 
+    let mut mapper_info = String::with_capacity(512);
+    let mut display_mapper = false;
+    let mut toggle_mapper =  false;
+
     // let mut audio = vec![0f32; 2048];
     // let mut phase = 0.0f32;
 
@@ -133,6 +137,7 @@ fn nes_loop(mut nes: Box<Nes>, mut ui: AppUI) -> Result<(), Box<dyn Error>> {
 
     while !ui.raylib_handle().window_should_close() {
         let t0 = Instant::now();
+
 
         match sim {
             RunMode::Sim => {
@@ -203,7 +208,7 @@ fn nes_loop(mut nes: Box<Nes>, mut ui: AppUI) -> Result<(), Box<dyn Error>> {
 
         if ui
             .raylib_handle()
-            .is_key_pressed(raylib::ffi::KeyboardKey::KEY_F)
+            .is_key_pressed(raylib::ffi::KeyboardKey::KEY_F11)
         {
             dev_mode ^= true;
         }
@@ -221,15 +226,19 @@ fn nes_loop(mut nes: Box<Nes>, mut ui: AppUI) -> Result<(), Box<dyn Error>> {
         //     log_string.clear();
         // }
 
-        if ui.raylib_handle().is_key_pressed(KeyboardKey::KEY_P) {
-            selected_palette += 1;
-            selected_palette &= 0x3;
-            frame_updated = true;
-            fps10_draw_ctrl = 6;
+        // if ui.raylib_handle().is_key_pressed(KeyboardKey::KEY_P) {
+        //     selected_palette += 1;
+        //     selected_palette &= 0x3;
+        //     frame_updated = true;
+        //     fps10_draw_ctrl = 6;
+        // }
+
+        if ui.raylib_handle().is_key_pressed(KeyboardKey::KEY_M) {
+            toggle_mapper ^= true;
         }
 
         if frame_updated && dev_mode {
-            if fps10_draw_ctrl == 6 {
+            if false {
                 get_ppu_info(
                     &mut nes,
                     selected_palette,
@@ -247,6 +256,8 @@ fn nes_loop(mut nes: Box<Nes>, mut ui: AppUI) -> Result<(), Box<dyn Error>> {
                 &mut dissasembly,
                 pc,
             );
+            mapper_info.clear();
+            display_mapper = nes.mapper.debug_information(&mut mapper_info);
         }
 
         let mut fs = FrameState {
@@ -278,6 +289,9 @@ fn nes_loop(mut nes: Box<Nes>, mut ui: AppUI) -> Result<(), Box<dyn Error>> {
                 chr_bank_1: chr_bank_1_canvas.as_slice(),
                 palettes,
                 selected_palette,
+                display_mapper_info: display_mapper,
+                mapper_info: &mapper_info,
+                toggle_mapper
             },
         };
         fs = ui.update(fs);
