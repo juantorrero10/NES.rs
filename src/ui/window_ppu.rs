@@ -43,7 +43,12 @@ pub fn update(
             imgui::TextureId::new(cb1.texture().id as usize),
             [draw_n, draw_n],
         )
-        .build(ui); 
+        .build(ui);
+
+        ui.set_cursor_pos([ui.window_size()[0] * 0.02, ui.window_size()[1] * 0.9]);
+        ui.set_window_font_scale(0.8);
+        ui.text_colored(theme.value, st.ppu_info.ppu_regs);
+        ui.set_window_font_scale(1.0);
     } else {
         ui.dummy([0.0, dims.window_h * 0.004]);
         ui.indent_by(dims.window_w * 0.007);

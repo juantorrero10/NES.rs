@@ -282,6 +282,8 @@ impl AppUI {
         self.text_buffer.clear();
         let buffer = &mut self.text_buffer;
 
+        // let _span = tracy_client::span!("Update UI");
+
         macro_rules! fmt_text {
             ($ui:expr, $fmt:literal, $($arg:tt)*) => {
                 buffer.clear();
@@ -329,6 +331,49 @@ impl AppUI {
         //     }
         // }
         let ui = self.ctx.new_frame();
+
+
+        if let Some(_menu_bar) = ui.begin_main_menu_bar() {
+        // 2. The "File" Dropdown (Save States, Loading, Exiting)
+            if let Some(_menu_file) = ui.begin_menu("File") {
+                if ui.menu_item("Load ROM...") {
+                    // TODO: Trigger your file dialog open logic
+                }
+                
+                ui.separator(); // Draws a nice clean dividing line
+
+                // Save State Sub-items
+                if ui.menu_item_config("Save State").shortcut("Ctrl+S").build() {
+                   st.save_signal = true;
+                }
+                if ui.menu_item_config("Load State").shortcut("Ctrl+L").build() {
+                    // TODO: Deserialize your saved state file back into memory
+                }
+
+                ui.separator();
+
+                if ui.menu_item("Exit") {
+                    std::process::exit(0);
+                }
+            }
+
+            // 3. The "Config" Dropdown (Controls, Audio, Emulation Speed)
+            if let Some(_menu_config) = ui.begin_menu("Config") {
+                if ui.menu_item("Input Settings...") {
+                    // TODO: Open a pop-up window to remap controllers
+                }
+                if ui.menu_item("Audio Volume...") {
+                    // TODO: Open audio adjustment overlay
+                }
+            }
+
+            // 4. The "Window" Dropdown (Toggle Debuggers, PPU Viewer, Log Windows)
+            if let Some(_menu_window) = ui.begin_menu("Window") {
+                // You can use mutable booleans here to toggle sub-windows on/off!
+                // ui.checkbox("Show PPU Viewer", &mut my_state.show_ppu_viewer);
+                // ui.checkbox("Show CPU Debugger", &mut my_state.show_cpu_debugger);
+            }
+        }
 
         ui.dockspace_over_main_viewport();
         let window = [

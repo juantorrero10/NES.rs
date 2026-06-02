@@ -1,4 +1,4 @@
-use std::{cell::RefCell, error::Error, ffi::OsString, fmt::Write, rc::Rc};
+use std::{cell::RefCell, error::Error, ffi::OsString, fs, io::{Read, Write}, rc::Rc};
 use thiserror::Error;
 
 use crate::nes::{
@@ -26,6 +26,9 @@ pub struct Nes {
     pub mapper: Box<dyn Mapper>,
     oam_dma_buffer: [u8; 256],
     ppu_cpu_clock_frequency: u8,
+
+    #[cfg(feature = "log")]
+    log: bool,
 }
 
 #[derive(Error, Debug)]
@@ -62,7 +65,19 @@ impl Nes {
             mapper,
             oam_dma_buffer: [0u8; 256],
             ppu_cpu_clock_frequency: 0,
+            #[cfg(feature = "log")]
+            log: false,
         })
+    }
+
+    #[cfg(feature = "log")]
+    pub fn toggle_log(&mut self) {
+        self.log ^= true;
+    }
+
+    #[cfg(feature = "log")]
+    pub fn log_ppu_state(&self) {
+        log::info!("PPU SC: {}, CYC: {}", self.ppu.scanline, self.ppu.cycle);
     }
 
     pub fn reset(&mut self) -> Result<()> {
@@ -116,6 +131,10 @@ impl Nes {
         Ok(self.bus_cpu.debug_read(addr, &mut self.mapper)?)
     }
 
+    pub fn debug_write(&mut self, addr: u16, data: u8) {
+        self.bus_cpu.debug_write(addr, data, &mut self.mapper)
+    }
+
     #[inline(always)]
     pub fn write(&mut self, addr: u16, data: u8) -> Result<()> {
         // let _span = tracy_client::span!("cpu write");
@@ -162,6 +181,13 @@ impl Nes {
         self.ppu.clock(instance, &mut self.mapper);
         self.ppu_cpu_clock_frequency += 1;
 
+        #[cfg(feature = "log")]
+        {
+            if self.log && self.mapper.is_irq_pending() {
+                log::info!("IRQ Is pending: SC: {}, CYC: {}", self.ppu.scanline, self.ppu.cycle);
+            }
+        }
+
         let nmi_signal = self.ppu.nmi_signal;
         if nmi_signal {
             self.cpu.nmi(instance);
@@ -188,32 +214,32 @@ impl Nes {
         Ok(false)
     }
 
-    pub fn finish_nestest_fmt(&self, s: &mut String) {
-        s.push_str("PPU:");
-        let (mut sc, ppu_cyc) = self.ppu.get_cycle_and_sc();
-        sc += 1;
-        match sc {
-            0..=9 => {
-                s.push_str("  ");
-            }
-            10..=99 | -1 => {
-                s.push(' ');
-            }
-            _ => {}
-        }
-        write!(s, "{},", sc);
-        match ppu_cyc {
-            0..=9 => {
-                s.push_str("  ");
-            }
-            10..=99 => {
-                s.push(' ');
-            }
-            _ => {}
-        }
-        write!(s, "{} ", ppu_cyc);
-        write!(s, "CYC:{}", self.cpu.state.clock_counter - 1);
-    }
+    // pub fn finish_nestest_fmt(&self, s: &mut String) {
+    //     s.push_str("PPU:");
+    //     let (mut sc, ppu_cyc) = self.ppu.get_cycle_and_sc();
+    //     sc += 1;
+    //     match sc {
+    //         0..=9 => {
+    //             s.push_str("  ");
+    //         }
+    //         10..=99 | -1 => {
+    //             s.push(' ');
+    //         }
+    //         _ => {}
+    //     }
+    //     write!(s, "{},", sc);
+    //     match ppu_cyc {
+    //         0..=9 => {
+    //             s.push_str("  ");
+    //         }
+    //         10..=99 => {
+    //             s.push(' ');
+    //         }
+    //         _ => {}
+    //     }
+    //     write!(s, "{} ", ppu_cyc);
+    //     write!(s, "CYC:{}", self.cpu.state.clock_counter - 1);
+    // }
 }
 
 // Communication between components
@@ -283,3 +309,4 @@ impl Nes {
         }
     }
 }
+

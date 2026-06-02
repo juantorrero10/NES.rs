@@ -100,6 +100,7 @@ pub struct State6502 {
 pub struct Cpu {
     pub registers: RegFile6502,
     pub state: State6502,
+    #[cfg(feature = "log")]
     pub log: bool,
 }
 
@@ -125,6 +126,7 @@ impl Cpu {
     pub fn new() -> Self {
         Cpu {
             registers: RegFile6502::default(),
+    #       [cfg(feature = "log")]
             log: false,
             state: State6502::default(),
         }
@@ -295,9 +297,10 @@ impl Cpu {
         self.push((self.registers.pc >> 8) as u8, nes);
         self.push((self.registers.pc & 0x00FF) as u8, nes);
 
+        let pushed_sr = (self.registers.sr | Flag6502::U as u8) & !(Flag6502::B as u8);
+        
         self.set_flag(Flag6502::I, true);
 
-        let pushed_sr = (self.registers.sr | Flag6502::U as u8) & !(Flag6502::B as u8);
         self.push(pushed_sr, nes);
     }
 
@@ -307,10 +310,22 @@ impl Cpu {
         if self.get_flag(Flag6502::I) {
             return;
         }
+        
         self.interrupt_save_state(nes);
         let addr = self.read16(IRQ_VEC, nes);
         self.state.cycles_left = 7;
         self.registers.pc = addr;
+        #[cfg(feature = "log")]
+        {
+            if self.log {
+                log::info!("CPU IRQ! new pc => {}", self.registers.pc);
+            }
+        }
+    }
+
+    #[cfg(feature = "log")]
+    pub fn toggle_log(&mut self) {
+        self.log ^= true;
     }
 
     #[inline(always)]

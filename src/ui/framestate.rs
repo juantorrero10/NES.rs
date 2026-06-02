@@ -10,6 +10,8 @@ pub struct FrameState<'a> {
     pub memory_editor: MemEdit<'a>,
     pub ppu_info: PpuInfo<'a>,
     pub game_audio: Apu,
+    pub save_signal: bool,
+    pub load_signal: bool,
 }
 
 pub struct Apu {
@@ -21,6 +23,7 @@ pub struct PpuInfo<'a> {
     pub chr_bank_1: &'a [u8],
     pub palettes: [[[u8; 4]; 4]; 8],
     pub selected_palette: u16,
+    pub ppu_regs: &'a str,
     pub toggle_mapper: bool,
     pub display_mapper_info: bool,
     pub mapper_info: &'a str,

@@ -30,9 +30,10 @@ pub struct MMC3 {
     last_ppu_addr: u16,
     a12_filter: u8,
 
-    request_on_cpu_clock: bool,
-
-    debug_last_seen: u16,
+    #[cfg(feature = "log")]
+    log_enable: bool,
+    #[cfg(feature = "log")]
+    last_counter_seen: u8,
 
     // --- Internal Hardware Scanline Counter (IRQ) ---
     irq_latch: u8,
@@ -68,8 +69,6 @@ impl MMC3 {
             prg_ram_enable: true,
             prg_ram_allow_write: true,
 
-            request_on_cpu_clock: false,
-
             last_ppu_addr: 0,
             a12_filter: 3,
 
@@ -78,10 +77,13 @@ impl MMC3 {
             chr_offsets: [
                 0x0000, 0x0400, 0x0600, 0x0800, 0x0C00, 0x1000, 0x1400, 0x1800,
             ],
+            #[cfg(feature = "log")]
+            log_enable: false,
+            #[cfg(feature = "log")]
+            last_counter_seen: 1,
             mirroring,
             irq_latch: 0,
             irq_counter: 0,
-            debug_last_seen: 0,
             irq_enabled: false,
             irq_reload: false,
             irq_is_pending: false,
@@ -194,6 +196,12 @@ impl Mapper for MMC3 {
     fn mirroring(&self) -> MemoryMirroring {
         self.mirroring
     }
+
+    #[cfg(feature = "log")]
+    fn toggle_log(&mut self) {
+        self.log_enable ^= true;
+    }
+
     fn ppu_intercept<'a>(
         &'a mut self,
         addr: u16,
@@ -219,13 +227,11 @@ impl Mapper for MMC3 {
         let new_a12 = (addr & 0x1000) != 0;
 
         self.last_ppu_addr = addr;
-        
-        if !old_a12 && new_a12 {
-            //log::info!("Rising edge!, Filter: {}", self.a12_filter);
-        }
 
+        let mut a12_happened = false;
 
         if !old_a12 && new_a12 && self.a12_filter == 3 {
+            a12_happened = true;
             if self.irq_reload {
                 self.irq_counter = self.irq_latch;
                 self.irq_reload = false;
@@ -245,6 +251,35 @@ impl Mapper for MMC3 {
         if new_a12 {
             self.a12_filter = 0;
         }
+        #[cfg(feature = "log")]
+        {
+            if self.log_enable && self.last_counter_seen != self.irq_counter {
+                self.last_counter_seen = self.irq_counter;
+                if a12_happened {
+                    log::info!(
+                        "a12 re? (YES). IRQ STATE => C: {}, L: {}, E: {}, R: {}, P: {}",
+                        self.irq_counter,
+                        self.irq_latch,
+                        self.irq_enabled,
+                        self.irq_reload,
+                        self.irq_is_pending
+                    );
+                } else {
+                    log::info!(
+                        "a12 re? ( NO). IRQ STATE => C: {}, L: {}, E: {}, R: {}, P: {}",
+                        self.irq_counter,
+                        self.irq_latch,
+                        self.irq_enabled,
+                        self.irq_reload,
+                        self.irq_is_pending
+                    );
+                }
+            }
+            
+            
+        }
+        
+
         addr < 0x2000
     }
 
@@ -267,7 +302,7 @@ impl Mapper for MMC3 {
     }
 
     fn on_cpu_clock(&mut self) -> Option<NesEvent> {
-        // Request PPU address bus 
+        // Request PPU address bus
         Some(NesEvent::InfoReq(MapperInfoReq::PpuAddressBus))
     }
 
@@ -364,7 +399,7 @@ impl Mapper for MMC3 {
 impl MMC3 {
     fn update_offsets(&mut self) {
         let n_prg_banks = self.prg_rom.len() / PRG_WINDOW_SIZE;
-        let n_chr_banks = self.prg_rom.len() / CHR_WINDOW_SIZE;
+        let n_chr_banks = self.chr_rom.len() / CHR_WINDOW_SIZE;
 
         let prg_mask = n_prg_banks - 1;
         let chr_mask = n_chr_banks - 1;
@@ -405,6 +440,13 @@ impl MMC3 {
             self.chr_offsets[5] = r0_off_base + CHR_WINDOW_SIZE;
             self.chr_offsets[6] = r1_off_base;
             self.chr_offsets[7] = r1_off_base + CHR_WINDOW_SIZE;
+        }
+
+        #[cfg(feature = "log")]
+        {
+            if self.log_enable {
+                log::info!("Banks swapped");
+            }
         }
     }
 }

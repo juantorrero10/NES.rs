@@ -1007,6 +1007,13 @@ pub mod instructions {
     });
 
     handler!(rti, c, bus, {
+        #[cfg(feature = "log")]
+        {
+            if c.log {
+                log::info!("RTI!");
+                bus.log_ppu_state();
+            }
+        }
         let mut sr = c.pull(bus);
         sr &= !(Flag6502::B as u8);
         sr |= Flag6502::U as u8;

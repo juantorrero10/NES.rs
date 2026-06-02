@@ -264,4 +264,8 @@ impl BusCpu {
     pub fn debug_read16<'a>(&mut self, addr: u16, mapper: &'a mut Box<dyn Mapper>) -> Result<u16> {
         Ok((self.debug_read(addr, mapper)? as u16) | (self.debug_read(addr + 1, mapper)? as u16) << 8)
     }
+
+    pub fn debug_write(&mut self, addr: u16, data: u8,  mapper: &mut Box<dyn Mapper>) {
+        let _ = self.bus_operation(addr, true, data, false, mapper);
+    }
 }

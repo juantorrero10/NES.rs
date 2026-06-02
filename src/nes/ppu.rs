@@ -1,6 +1,17 @@
+use std::fmt::Write;
+
 use thiserror::Error;
 
-use crate::nes::{Nes, bus_cpu::BusCpuError, game_rom::MemoryMirroring, mapper_base::Mapper, ppu::{self, BusPpuTarget::{Memory, OpenBus}}};
+use crate::nes::{
+    Nes,
+    bus_cpu::BusCpuError,
+    game_rom::MemoryMirroring,
+    mapper_base::Mapper,
+    ppu::{
+        self,
+        BusPpuTarget::{Memory, OpenBus},
+    },
+};
 
 #[allow(unused)]
 pub const ADDR_CHR_START: u16 = 0x0000;
@@ -28,7 +39,7 @@ pub struct BusPpuChips {
 
 pub enum BusPpuTarget<'a> {
     Memory(&'a mut u8),
-    OpenBus
+    OpenBus,
 }
 
 impl BusPpu {
@@ -50,13 +61,11 @@ impl BusPpu {
         data: u8,
         write: bool,
         mapper: &'a mut Box<dyn Mapper>,
-        update_address_bus: bool
+        update_address_bus: bool,
     ) -> BusPpuTarget<'a> {
         let mut mapped_addr = addr & 0x3FFF;
-    
-        //log::info!("Addr down: {:014b}, address_bus: {:014b}, prev_address_bus: {:014b}", addr, self.address_bus, self.prev_address_bus);
 
-        let prev_addr = self.address_bus;
+        // Address bus is really just an emulation for the mapper.
         if mapped_addr <= ADDR_CHR_END && update_address_bus {
             self.address_bus = addr;
         }
@@ -119,9 +128,7 @@ impl BusPpu {
                 self.open_bus_sim = d;
                 return d;
             }
-            OpenBus => {
-                return self.open_bus_sim
-            }
+            OpenBus => return self.open_bus_sim,
         }
     }
 
@@ -135,7 +142,6 @@ impl BusPpu {
             OpenBus => {}
         }
     }
-
 }
 
 const SCREEN_WIDTH: usize = 256;
@@ -154,8 +160,10 @@ pub struct Ppu {
     pub nmi_signal: bool,
     pub is_odd_frame: bool,
 
-    scanline: isize,
-    cycle: usize,
+    pub log: bool,
+
+    pub scanline: isize,
+    pub cycle: usize,
 
     screen_data: [u8; SCREEN_SIZE],
 
@@ -284,10 +292,11 @@ type Result<T> = std::result::Result<T, PpuError>;
 // Main renderring implementation block
 impl Ppu {
     pub fn clock(&mut self, nes: *mut Nes, mapper: &mut Box<dyn Mapper>) {
-
         if let Some(e) = mapper.on_ppu_clock() {
             let instance = unsafe { nes.as_mut().unwrap() };
-            instance.trigger_event(e).expect("Event failed on PPU Clock hook");
+            instance
+                .trigger_event(e)
+                .expect("Event failed on PPU Clock hook");
         }
         // let _span = tracy_client::span!("Clock PPU");
         // self.frame_complete = false;
@@ -317,7 +326,7 @@ impl Ppu {
             _ => unreachable!(),
         }
 
-        let red_col;
+        let mut red_col = false;
 
         let (pal_idx, col_idx) = {
             let mut fg_pal = 0;
@@ -338,7 +347,7 @@ impl Ppu {
                 (bg_pal, bg_col) = self.extract_background_color();
             }
 
-            red_col = self.check_sprite0_hit(bg_col, fg_col, sprite_zero_rendered);
+            _ = self.check_sprite0_hit(bg_col, fg_col, sprite_zero_rendered);
 
             self.blend_colors((fg_pal, fg_col), (bg_pal, bg_col), fg_priority)
         };
@@ -443,8 +452,16 @@ impl Ppu {
         if self.cycle > 0 && self.cycle <= 256 {
             self.shift_fg_registers();
         }
+
         match self.cycle {
-            0 => {}
+            0 => {
+                #[cfg(feature = "log")]
+                {
+                    if self.log {
+                        log::info!("New Scanline!. SC: {}, CYC: 0", self.scanline);
+                    }
+                }
+            }
             // Clean secondary Mem if not in pre-render line
             1 => {
                 if self.scanline != -1 {
@@ -462,14 +479,30 @@ impl Ppu {
             65..=255 => {}
             256 => {
                 if self.scanline != 1 {
+                    #[cfg(feature = "log")]
+                    {
+                        if self.log {
+                            log::info!("Sprite Eval!CYC: {}", self.cycle)
+                        }
+                    }
                     self.sprite_eval();
                 }
             }
 
-            257..=319 => {}
-            320 => {
+            // Because of mappers it is best to trigger this some what at the beggining of the 257 to 320 window.
+            // This is the best i found specially for SMB3 (mapper MMC3).
+            // Probably the best would be to implement the cycle by cycle routine like the real hardware
+            // instead of fetching it all at once.
+            257 => {
+                #[cfg(feature = "log")]
+                {
+                    if self.log {
+                        log::info!("Sprite fetch!, CYC: {}", self.cycle)
+                    }
+                }
                 self.sprite_fetch(nes);
             }
+            258..=320 => {}
 
             // Wait for next line
             321..=340 => {}
@@ -637,7 +670,6 @@ impl Ppu {
     }
 
     fn extract_background_color(&self) -> (u8, u8) {
-
         let mux = 0x8000 >> self.fine_x;
 
         let pixel_bit0 = (self.bg_regs.shift_pat_low & mux) > 0;
@@ -650,9 +682,9 @@ impl Ppu {
 
         let mut palette = (pal_bit1 as u8) << 1 | (pal_bit0 as u8);
 
-        if self.cycle >= 1 && self.cycle <= 8 && (self.mask & MASK_RENDER_LEFT_BG) == 0 {
+        if self.cycle < 8 && (self.mask & MASK_RENDER_LEFT_BG) == 0 {
             pixel = 0;
-            palette = 0;
+            // palette = 0;
         }
 
         (palette, pixel)
@@ -663,7 +695,7 @@ impl Ppu {
         let mut col_idx = 0;
         let mut priority = false;
         let mut is_zero_rendered = false;
-        
+
         for (i, spr) in self.fg_regs.sprites.iter().enumerate() {
             if spr.x_counter != 0 {
                 continue;
@@ -682,8 +714,8 @@ impl Ppu {
 
             break;
         }
-        if self.cycle >= 1 && self.cycle <= 8 && (self.mask & MASK_RENDER_LEFT_SPR) == 0 {
-            pal_idx = 0;
+        if self.cycle < 8 && (self.mask & MASK_RENDER_LEFT_SPR) == 0 {
+            // pal_idx = 0;
             col_idx = 0;
         }
         (pal_idx, col_idx, priority, is_zero_rendered)
@@ -810,7 +842,7 @@ impl Ppu {
     fn check_sprite0_hit(&mut self, bg_col: u8, fg_col: u8, sprite_zero_rendered: bool) -> bool {
         if bg_col > 0 && fg_col > 0 && self.cycle <= 256 && self.cycle != 255 {
             if self.fg_regs.sprite0_possible && sprite_zero_rendered {
-                if self.cycle >= 1 && self.cycle <= 8 {
+                if self.cycle < 8 {
                     // For a hit to happen here, BOTH the left BG and left Sprite rendering must be enabled!
                     let left_rendering_enabled = (self.mask & MASK_RENDER_LEFT_BG) != 0
                         && (self.mask & MASK_RENDER_LEFT_SPR) != 0;
@@ -877,6 +909,7 @@ impl Ppu {
             frame_complete: false,
             nmi_signal: false,
             is_odd_frame: false,
+            log: false,
             ctrl: 0,
             mask: 0,
             fine_x: 0,
@@ -905,6 +938,10 @@ impl Ppu {
         self.oam.addr;
 
         self.screen_data.fill(0);
+    }
+
+    pub fn toggle_log(&mut self) {
+        self.log ^= true;
     }
 
     pub fn read(&self, addr: u16, nes: *mut Nes) -> u8 {
@@ -1047,6 +1084,14 @@ impl Ppu {
     #[inline(always)]
     pub fn get_cycle_and_sc(&self) -> (isize, usize) {
         (self.scanline, self.cycle)
+    }
+
+    pub fn debug_format_registers(&self, out: &mut String) {
+        write!(
+            out,
+            "STATUS: {:02X} CTRL: {:02X} MASK: {:02X} OAMAddr: {:02X} ADDR: {:04X}",
+            self.status, self.ctrl, self.mask, self.oam.addr, self.vram.addr
+        );
     }
 
     pub fn debug_extract_palettes(&mut self, out: &mut [[[u8; 4]; 4]; 8], nes: *mut Nes) {

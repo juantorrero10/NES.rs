@@ -39,4 +39,7 @@ pub trait Mapper {
     fn info_request_response(&mut self, _i: MapperInfoReq, _data_back: Option<u64>) {}
 
     fn debug_information(&self, _out: &mut String) -> bool { false }
+
+    #[cfg(feature = "log")]
+    fn toggle_log(&mut self) {}
 }
