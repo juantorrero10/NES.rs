@@ -6,27 +6,22 @@
 //static GLOBAL: ProfiledAllocator<std::alloc::System> = ProfiledAllocator::new(std::alloc::System, 0);
 
 use std::{
-    collections::HashMap,
-    error::Error,
-    ffi::OsString,
-    fmt::Write,
-    thread::sleep,
-    time::{Duration, Instant},
+    collections::HashMap, error::Error, ffi::OsString, fmt::Write, sync::Arc, thread::sleep, time::{Duration, Instant}
 };
 
 use colored::Colorize;
 use log::info;
 use raylib::ffi::KeyboardKey;
+use ringbuf::{SharedRb, storage::Heap, traits::Split, wrap::caching::Caching};
 use simple_logger::SimpleLogger;
 
 use crate::{
-    nes::{Nes, NesError, bus_cpu::BusCpu, instruction_set::Instruction6502},
-    ui::{
+    main_loop::AUDIO_BUFFER_SIZE, nes::{Nes, NesError, bus_cpu::BusCpu, instruction_set::Instruction6502}, ui::{
         AppUI, Theme,
         framestate::{
             Apu, Dissassebly, FrameState, GameScreen, MemEdit, PersistentFrameState, PpuInfo,
         },
-    },
+    }
 };
 
 mod nes;
@@ -34,6 +29,7 @@ mod ui;
 mod main_loop;
 
 const FPS60_ELAPSED: u128 = 16667;
+const EMU_SAMPLE_RATE: u32 = 48000;
 
 enum RunMode {
     Stopped,
@@ -98,8 +94,11 @@ fn get_ppu_info(
     nes.ppu.debug_extract_palettes(&mut *out_pal, nes_ptr);
 }
 
+type AudioProducer = Caching<Arc<SharedRb<Heap<f32>>>, true, false>;
+type AudioConsumer = Caching<Arc<SharedRb<Heap<f32>>>, false, true>;
+
 // CRASH JUST AS I ENTER
-fn nes_init() -> Result<Box<Nes>, NesError> {
+fn nes_init() -> Result<(Box<Nes>, AudioConsumer), NesError> {
     let mut args = std::env::args();
     while let Some(s) = args.next() && s.starts_with("--") {}
 
@@ -118,9 +117,11 @@ fn nes_init() -> Result<Box<Nes>, NesError> {
             }
         }
     };
-    let mut nes = Box::new(Nes::new(rom_path)?);
+    let audio: SharedRb<ringbuf::storage::Heap<f32>> = SharedRb::new(AUDIO_BUFFER_SIZE);
+    let (tx, rx) = audio.split();
+    let mut nes = Box::new(Nes::new(rom_path, tx)?);
     nes.reset();
-    Ok(nes)
+    Ok((nes, rx))
 }
 
 fn app_init() -> AppUI {
@@ -170,9 +171,9 @@ fn main() {
             "NES Emulator panicked!".red().bold(),
             e
         ),
-        Ok(n) => {
+        Ok((n, aud_consumer)) => {
             log::info!("Emulator initialized.");
-            match main_loop::nes_loop(n, app_init()) {
+            match main_loop::nes_loop(n, aud_consumer, app_init()) {
                 Err(e) => println!(
                     "{} {}: {}",
                     "Runtime".green().italic(),

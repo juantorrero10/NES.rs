@@ -222,7 +222,10 @@ impl Mapper for MMC3 {
         BusPpuTarget::Memory(&mut self.chr_rom[mapped_addr])
     }
 
-    fn ppu_need_intercept(&mut self, addr: u16) -> bool {
+    fn ppu_need_intercept(&mut self, addr: u16, db_mode: bool) -> bool {
+        if db_mode {
+            return addr < 0x2000;
+        }
         let old_a12 = (self.last_ppu_addr & 0x1000) != 0;
         let new_a12 = (addr & 0x1000) != 0;
 

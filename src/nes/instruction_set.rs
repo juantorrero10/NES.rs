@@ -587,6 +587,7 @@ pub mod addressing {
         c.registers.pc += 2;
         let old_page = c.state.addr_abs >> 8;
         c.state.addr_abs += c.registers.x as u16;
+
         // Additional cycle if pagechange
         if old_page != c.state.addr_abs >> 8 {
             return Ok(true);
@@ -647,6 +648,8 @@ pub mod addressing {
         let old_page = c.state.addr_abs >> 8;
         c.state.addr_abs = c.state.addr_abs.wrapping_add(c.registers.y as u16);
         if old_page != c.state.addr_abs >> 8 {
+            // dummy read
+            let _ = bus.read(ptr);
             return Ok(true);
         }
         Ok(false)

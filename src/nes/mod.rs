@@ -1,9 +1,9 @@
-use std::{cell::RefCell, error::Error, ffi::OsString, fs, io::{Read, Write}, rc::Rc};
+use std::{cell::RefCell, error::Error, ffi::OsString, fs, io::{Read, Write}, rc::Rc, thread, time::Duration};
 use thiserror::Error;
 
-use crate::nes::{
+use crate::{AudioProducer, EMU_SAMPLE_RATE, nes::{
     NesEvent::InfoReq, apu::Apu, bus_cpu::{BusCpu, BusCpuError, IOResult}, controller::Controller, cpu::{Cpu, CpuError}, game_rom::ROMErr, mapper_base::Mapper, ppu::{BusPpu, BusPpuChips, Ppu, PpuError, PpuRegister, ppu_flags::STATUS_VBLANK}
-};
+}};
 
 mod apu;
 pub mod bus_cpu;
@@ -46,12 +46,12 @@ pub enum NesError {
 type Result<T> = std::result::Result<T, NesError>;
 
 impl Nes {
-    pub fn new(game_file_path: OsString) -> Result<Self> {
+    pub fn new(game_file_path: OsString, audio_producer: AudioProducer) -> Result<Self> {
         let mapper = game_rom::load_rom(game_file_path)?;
         let cpu = Cpu::new();
         let bus_cpu = BusCpu::new();
         let ppu = Ppu::new();
-        let apu = Apu {};
+        let apu = Apu::new(audio_producer, EMU_SAMPLE_RATE);
         let controller = Controller::default();
         let bus_ppu = BusPpu::new();
 
@@ -165,6 +165,12 @@ impl Nes {
     }
 
     #[inline(always)]
+    pub fn ppu_debug_read(&mut self, addr: u16) -> u8 {
+        // let _span = tracy_client::span!("ppu read");
+        self.bus_ppu.debug_read(addr, &mut self.mapper)
+    }
+
+    #[inline(always)]
     pub fn ppu_write(&mut self, addr: u16, data: u8) {
         // let _span = tracy_client::span!("ppu write");
         self.bus_ppu.write(addr, data, &mut self.mapper);
@@ -175,7 +181,6 @@ impl Nes {
 
         let instance = std::ptr::from_mut(self);
 
-        self.ppu.frame_complete = false;
         self.ppu.clock(instance, &mut self.mapper);
         self.ppu.clock(instance, &mut self.mapper);
         self.ppu.clock(instance, &mut self.mapper);
@@ -193,14 +198,16 @@ impl Nes {
             self.cpu.nmi(instance);
             self.ppu.nmi_signal = false;
         }
+        self.apu.clock(instance);
         self.cpu.clock(None, instance, &mut self.mapper);
 
         Ok(())
     }
 
+
     pub fn step_frame(&mut self, break_point: Option<u16>) -> Result<bool> {
         // let _span = tracy_client::span!("Step frame");
-        loop {
+            loop {
             self.clock(None)?;
             if let Some(a) = break_point
                 && a == self.cpu.get_pc()

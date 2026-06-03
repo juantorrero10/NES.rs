@@ -242,6 +242,7 @@ impl Cpu {
             );
         }*/
 
+
         self.state.last_opcode = self.read(self.registers.pc, nes);
         self.registers.pc += 1;
 

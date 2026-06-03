@@ -72,7 +72,7 @@ impl Mapper for MMC0 {
         }
     }
 
-    fn ppu_need_intercept(&mut self, addr: u16) -> bool {
+    fn ppu_need_intercept(&mut self, addr: u16, _: bool) -> bool {
         return addr <= ADDR_CHR_END;
     }
     fn ppu_intercept<'a>(

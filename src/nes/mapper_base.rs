@@ -22,7 +22,7 @@ pub trait Mapper {
 
     fn irq_clear(&mut self) {}
 
-    fn ppu_need_intercept(&mut self, addr: u16) -> bool;
+    fn ppu_need_intercept(&mut self, addr: u16, debug_mode: bool) -> bool;
     
     fn ppu_intercept<'a>(
         &'a mut self,

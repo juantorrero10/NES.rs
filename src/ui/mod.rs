@@ -3,11 +3,11 @@ use std::fmt::Write;
 use imgui::{FontId, StyleColor, StyleVar, WindowFlags, sys::ImGuiCond_FirstUseEver};
 use log::info;
 use raylib::{
-    RaylibHandle, RaylibThread, audio::{AudioStream, RaylibAudio}, color::Color, drawing::{RaylibDraw, RaylibTextureModeExt}, ffi::{IsAudioStreamProcessed, LoadAudioStream, PlayAudioStream, UpdateAudioStream}, texture::{RaylibRenderTexture2D, RaylibTexture2D, RenderTexture2D}
+    RaylibHandle, RaylibThread, audio::{AudioStream, RaylibAudio}, color::Color, drawing::{RaylibDraw, RaylibTextureModeExt}, ffi::{IsAudioStreamProcessed, LoadAudioStream, PlayAudioStream, SetAudioStreamBufferSizeDefault, UpdateAudioStream}, texture::{RaylibRenderTexture2D, RaylibTexture2D, RenderTexture2D}
 };
 use raylib_imgui_rs::Renderer;
 
-use crate::{nes::cpu::Flag6502, ui::framestate::FrameState};
+use crate::{main_loop::AUDIO_BUFFER_SIZE, nes::cpu::Flag6502, ui::framestate::FrameState};
 
 pub mod framestate;
 mod window_dissasm;
@@ -107,6 +107,8 @@ struct RaylibInfo {
     game_texture: RenderTexture2D,
     chr_bank0: RenderTexture2D,
     chr_bank1: RenderTexture2D,
+    audio_device: RaylibAudio,
+    audio_stream: raylib::ffi::AudioStream
 }
 
 impl RaylibInfo {
@@ -116,6 +118,8 @@ impl RaylibInfo {
         texture: RenderTexture2D, /*, screen_data: Vec<u8>*/
         c0: RenderTexture2D,
         c1: RenderTexture2D,
+        audio_stream: raylib::ffi::AudioStream,
+        audio_device: RaylibAudio,
     ) -> Self {
         Self {
             handle,
@@ -123,6 +127,8 @@ impl RaylibInfo {
             game_texture: texture,
             chr_bank0: c0,
             chr_bank1: c1,
+            audio_device,
+            audio_stream
         }
     }
 }
@@ -263,12 +269,18 @@ impl AppUI {
         c0.set_texture_filter(&thread, raylib::ffi::TextureFilter::TEXTURE_FILTER_POINT);
         c1.set_texture_filter(&thread, raylib::ffi::TextureFilter::TEXTURE_FILTER_POINT);
 
+        let audio = RaylibAudio::init_audio_device().expect("Could not initialize audio device.");
+        unsafe { SetAudioStreamBufferSizeDefault(AUDIO_BUFFER_SIZE as i32); }
+        let stream = unsafe {LoadAudioStream(48000,32, 1)};
+        unsafe{ PlayAudioStream(stream); }
+
+        // rl.set_target_fps(60);
 
         Self {
             options: Options::default(),
             ctx,
             renderer,
-            raylib: RaylibInfo::new(rl, thread, screen, c0, c1),
+            raylib: RaylibInfo::new(rl, thread, screen, c0, c1, stream, audio),
             text_buffer: String::with_capacity(128),
             addr_disassm_buffer: String::with_capacity(5),
             addr_memedit_buffer: "0000".to_owned(),
@@ -587,5 +599,13 @@ impl AppUI {
     }
     pub fn raylib_thread(&self) -> &RaylibThread {
         return &self.raylib.thread;
+    }
+
+    pub fn raylib_audio_device(&mut self) -> &mut RaylibAudio {
+        &mut self.raylib.audio_device
+    }
+
+    pub fn raylib_audio_stream(&mut self) -> &mut raylib::ffi::AudioStream {
+        &mut self.raylib.audio_stream
     }
 }

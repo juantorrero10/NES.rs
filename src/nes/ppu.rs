@@ -1,4 +1,4 @@
-use std::fmt::Write;
+use std::{fmt::Write, time::Instant};
 
 use thiserror::Error;
 
@@ -61,6 +61,7 @@ impl BusPpu {
         data: u8,
         write: bool,
         mapper: &'a mut Box<dyn Mapper>,
+        debug: bool,
         update_address_bus: bool,
     ) -> BusPpuTarget<'a> {
         let mut mapped_addr = addr & 0x3FFF;
@@ -70,7 +71,7 @@ impl BusPpu {
             self.address_bus = addr;
         }
 
-        if mapped_addr <= ADDR_CHR_END && mapper.ppu_need_intercept(addr) {
+        if mapped_addr <= ADDR_CHR_END && mapper.ppu_need_intercept(addr, debug) {
             return mapper.ppu_intercept(addr, &mut self.chips, data, write);
         }
 
@@ -122,7 +123,7 @@ impl BusPpu {
     }
     #[inline(always)]
     pub fn read(&mut self, addr: u16, mapper: &mut Box<dyn Mapper>) -> u8 {
-        match self.resolve_addr(addr, 0, false, mapper, true) {
+        match self.resolve_addr(addr, 0, false, mapper, false, true) {
             Memory(r) => {
                 let d = *r;
                 self.open_bus_sim = d;
@@ -132,10 +133,21 @@ impl BusPpu {
         }
     }
 
+    pub fn debug_read(&mut self, addr: u16, mapper: &mut Box<dyn Mapper>) -> u8 {
+        match self.resolve_addr(addr, 0, false, mapper, true, false) {
+            Memory(r) => {
+                let d = *r;
+                self.open_bus_sim = d;
+                return d;
+            }
+            OpenBus => return 0,
+        }
+    }
+
     #[inline(always)]
     pub fn write(&mut self, addr: u16, data: u8, mapper: &mut Box<dyn Mapper>) {
         self.open_bus_sim = data;
-        match self.resolve_addr(addr, data, false, mapper, true) {
+        match self.resolve_addr(addr, data, false, mapper, false, true) {
             Memory(r) => {
                 *r = data;
             }
@@ -164,6 +176,10 @@ pub struct Ppu {
 
     pub scanline: isize,
     pub cycle: usize,
+
+    t0: Instant,
+    total: Instant,
+    n_frames: f64,
 
     screen_data: [u8; SCREEN_SIZE],
 
@@ -358,13 +374,9 @@ impl Ppu {
         system_color_idx &= 0x3f;
         // FINALLY
 
-        let mut rbga_color = NES_COLOR_PALETTE[system_color_idx as usize];
+        let rgb_color = NES_COLOR_PALETTE[system_color_idx as usize];
 
-        if red_col {
-            rbga_color = [255, 0, 0]
-        }
-
-        self.set_pixel(self.cycle, self.scanline, rbga_color);
+        self.set_pixel(self.cycle, self.scanline, rgb_color);
 
         self.cycle += 1;
         if self.cycle > CYCLE_WIDTH {
@@ -372,6 +384,14 @@ impl Ppu {
             self.scanline += 1;
             if self.scanline > SCANLINE_HEIGHT {
                 self.scanline = -1;
+                // self.n_frames += 1.0;
+                // let elapsed = self.t0.elapsed().as_micros() as f64;
+                // log::info!(
+                //     "FPS delay: {:.4} ms ({:.4} FPS)",
+                //     elapsed / 1_000.0,
+                //     1_000_000.0 / elapsed
+                // );
+                // self.t0 = Instant::now();
                 self.frame_complete = true;
                 self.is_odd_frame ^= true;
             }
@@ -478,7 +498,7 @@ impl Ppu {
             // We can just get it over with in cycle 256.
             65..=255 => {}
             256 => {
-                if self.scanline != 1 {
+                if self.scanline != -1 {
                     #[cfg(feature = "log")]
                     {
                         if self.log {
@@ -493,7 +513,9 @@ impl Ppu {
             // This is the best i found specially for SMB3 (mapper MMC3).
             // Probably the best would be to implement the cycle by cycle routine like the real hardware
             // instead of fetching it all at once.
-            257 => {
+            257..=260 => {}
+            // I moved it to 261 to be more accurate
+            261 => {
                 #[cfg(feature = "log")]
                 {
                     if self.log {
@@ -502,7 +524,7 @@ impl Ppu {
                 }
                 self.sprite_fetch(nes);
             }
-            258..=320 => {}
+            262..=320 => {}
 
             // Wait for next line
             321..=340 => {}
@@ -570,7 +592,7 @@ impl Ppu {
                     0x0000
                 };
                 let mut tile_idx = (active_sprite.tile_id & 0xfe) as u16;
-                if row > 8 {
+                if row >= 8 {
                     tile_idx += 1;
                 }
                 addr = base_addr | (tile_idx << 4) | (row as u16 & 7);
@@ -909,7 +931,10 @@ impl Ppu {
             frame_complete: false,
             nmi_signal: false,
             is_odd_frame: false,
+            n_frames: 0.0,
             log: false,
+            total: Instant::now(),
+            t0: Instant::now(),
             ctrl: 0,
             mask: 0,
             fine_x: 0,
@@ -948,6 +973,12 @@ impl Ppu {
         let addr = addr & 0x3FFF;
         let nes = unsafe { nes.as_mut().unwrap() };
         nes.ppu_read(addr)
+    }
+
+    pub fn debug_read(&self, addr: u16, nes: *mut Nes) -> u8 {
+        let addr = addr & 0x3FFF;
+        let nes = unsafe { nes.as_mut().unwrap() };
+        nes.ppu_debug_read(addr)
     }
 
     pub fn write(&self, addr: u16, data: u8, nes: *mut Nes) {
@@ -1098,7 +1129,7 @@ impl Ppu {
         for palette_idx in 0..8 {
             for color_idx in 0..4 {
                 let system_color_idx =
-                    self.read(ADDR_PAL_START + 4 * palette_idx + color_idx, nes) as usize;
+                    self.debug_read(ADDR_PAL_START + 4 * palette_idx + color_idx, nes) as usize;
                 out[palette_idx as usize][color_idx as usize][0..3]
                     .copy_from_slice(NES_COLOR_PALETTE[system_color_idx].as_slice());
                 out[palette_idx as usize][color_idx as usize][3] = 255;
@@ -1120,8 +1151,8 @@ impl Ppu {
             for j in 0..16 {
                 let offset = (16 * (j * 16 + i)) + bank_offset;
                 for row in 0..8 {
-                    let tile_lsb = self.read(offset + row, nes);
-                    let tile_msb = self.read(offset + row + 8, nes);
+                    let tile_lsb = self.debug_read(offset + row, nes);
+                    let tile_msb = self.debug_read(offset + row + 8, nes);
 
                     for col in 0..8 {
                         let bit_l = (tile_lsb >> (7 - col)) & 0x01;
@@ -1136,10 +1167,12 @@ impl Ppu {
                             4 * (canvas_offset_y * DBG_CANVAS_WIDTH + canvas_offset_x);
 
                         let color_idx = if pattern_col != 0 {
-                            self.read(ADDR_PAL_START + 4 * palette_idx + pattern_col as u16, nes)
-                                as usize
+                            self.debug_read(
+                                ADDR_PAL_START + 4 * palette_idx + pattern_col as u16,
+                                nes,
+                            ) as usize
                         } else {
-                            self.read(ADDR_PAL_START, nes) as usize
+                            self.debug_read(ADDR_PAL_START, nes) as usize
                         };
 
                         match overwritte_custom_palette {
