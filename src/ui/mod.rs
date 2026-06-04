@@ -7,7 +7,7 @@ use raylib::{
 };
 use raylib_imgui_rs::Renderer;
 
-use crate::{main_loop::AUDIO_BUFFER_SIZE, nes::cpu::Flag6502, ui::framestate::FrameState};
+use crate::{main_loop::{AUDIO_BUFFER_SIZE, EMU_SAMPLE_RATE}, nes::cpu::Flag6502, ui::framestate::FrameState};
 
 pub mod framestate;
 mod window_dissasm;
@@ -271,7 +271,7 @@ impl AppUI {
 
         let audio = RaylibAudio::init_audio_device().expect("Could not initialize audio device.");
         unsafe { SetAudioStreamBufferSizeDefault(AUDIO_BUFFER_SIZE as i32); }
-        let stream = unsafe {LoadAudioStream(48000,32, 1)};
+        let stream = unsafe {LoadAudioStream(EMU_SAMPLE_RATE,32, 1)};
         unsafe{ PlayAudioStream(stream); }
 
         // rl.set_target_fps(60);
@@ -314,18 +314,6 @@ impl AppUI {
 
         self.renderer.update(&mut self.ctx, &mut self.raylib.handle);
 
-        if st.screen.update {
-            unsafe {
-                self.raylib
-                    .game_texture
-                    .texture_mut()
-                    .update_texture(std::slice::from_raw_parts(
-                        st.screen.video_output.0,
-                        st.screen.video_output.1,
-                    ))
-                    .expect("Couldnt swap buffer");
-            }
-        }
         // if unsafe { IsAudioStreamProcessed(self.raylib.audio_stream) } {
     
         //     // Ensure we actually have samples generated to give it
@@ -608,4 +596,20 @@ impl AppUI {
     pub fn raylib_audio_stream(&mut self) -> &mut raylib::ffi::AudioStream {
         &mut self.raylib.audio_stream
     }
+
+    pub fn update_game_screen(&mut self, screen_buf: *const u8, length: usize) {
+        unsafe {
+            self.raylib
+                .game_texture
+                .texture_mut()
+                .update_texture(std::slice::from_raw_parts(
+                    screen_buf,
+                    length,
+                ))
+                .expect("Couldnt swap buffer");
+        }
+    }
 }
+
+
+

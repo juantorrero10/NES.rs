@@ -40,7 +40,7 @@ pub fn nes_loop(
     let mut log_string = String::with_capacity(128);
 
     let mut step_instruction = true; // Step through next instruction
-    let mut real_time = false; // Poll audio every iteration.
+    let mut real_time; // Poll audio every iteration.
     let mut frame_has_changed = true; // We may have new info so we fetch it from NES
     let mut new_frame_generated = true; // PPU has generated another frame, force App update
 
@@ -57,10 +57,8 @@ pub fn nes_loop(
     let mut ppu_regs = String::with_capacity(128);
 
     let mut micros_since_last_frame;
-    let mut micros_since_last_game_frame: u128 = 0;
 
     let mut t0 = Instant::now();
-    let mut t0_game = Instant::now();
 
     // It is a pointer+len pair because we can guarantee that this will be valid for ever.
     let (screen_ptr, screen_len) = nes.ppu.get_screen();
@@ -114,6 +112,7 @@ pub fn nes_loop(
                     frame_has_changed = true;
                     pfs.mem_edit_page_changed = true;
                     new_frame_generated = true;
+                    ui.update_game_screen(screen_ptr, screen_len);
                     // log::info!("Ppu has new frame");
                 }
                 LoopBroken::Breakpoint => {
@@ -262,7 +261,7 @@ pub fn nes_loop(
             }
         }*/
 
-        if  micros_since_last_frame >= FPS60_ELAPSED || new_frame_generated {
+        if  micros_since_last_frame >= FPS60_ELAPSED {
             // log::info!("New frame");
             let us = micros_since_last_frame as f64;
             // if false {
@@ -290,9 +289,6 @@ pub fn nes_loop(
 
             fs = ui.update(fs);
             t0 = Instant::now();
-            if new_frame_generated {
-                // thread::sleep(Duration::from_micros(FPS60_ELAPSED as u64/ 2))
-            }
         }
 
         bkpt = fs.dissasembly.bkpt;
@@ -311,7 +307,9 @@ pub fn nes_loop(
     Ok(())
 }
 
-pub const AUDIO_BUFFER_SIZE: usize = 800;
+pub const AUDIO_BUFFER_SIZE: usize = 727;
+pub const FPS60_ELAPSED: u128 = 16667;
+pub const EMU_SAMPLE_RATE: u32 = 43653;
 
 enum LoopBroken {
     PollingFailed,

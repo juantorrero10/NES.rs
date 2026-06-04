@@ -28,8 +28,7 @@ mod nes;
 mod ui;
 mod main_loop;
 
-const FPS60_ELAPSED: u128 = 16667;
-const EMU_SAMPLE_RATE: u32 = 48000;
+
 
 enum RunMode {
     Stopped,

@@ -1,7 +1,7 @@
 use std::{cell::RefCell, error::Error, ffi::OsString, fs, io::{Read, Write}, rc::Rc, thread, time::Duration};
 use thiserror::Error;
 
-use crate::{AudioProducer, EMU_SAMPLE_RATE, nes::{
+use crate::{AudioProducer, main_loop::EMU_SAMPLE_RATE, nes::{
     NesEvent::InfoReq, apu::Apu, bus_cpu::{BusCpu, BusCpuError, IOResult}, controller::Controller, cpu::{Cpu, CpuError}, game_rom::ROMErr, mapper_base::Mapper, ppu::{BusPpu, BusPpuChips, Ppu, PpuError, PpuRegister, ppu_flags::STATUS_VBLANK}
 }};
 
