@@ -1,16 +1,13 @@
 use std::{
     ffi::c_void,
     sync::atomic::{AtomicPtr, Ordering},
-    thread,
 };
 
 use raylib::{
-    RaylibHandle,
-    ffi::{IsAudioStreamProcessed, SetAudioStreamCallback, UpdateAudioStream},
+    ffi::{SetAudioStreamCallback},
 };
 use ringbuf::{
-    SharedRb,
-    traits::{Consumer, Observer},
+    traits::{Consumer},
 };
 
 
@@ -289,12 +286,16 @@ unsafe extern "C" fn nes_audio_callback(buffer: *mut c_void, sample_count: u32) 
     }
 
     let mut n_sample = 0;
-    while n_sample < sample_count {
+    let mut timeout = 0;
+    while n_sample < sample_count && timeout < sample_count * 10 {
         ctx.nes.clock(None).expect("Failure during nes clock");
 
         if let Some(sample) = ctx.audio_consumer.try_pop() {
             out_buffer[n_sample] = sample;
             n_sample += 1;
+            timeout = 0;
+        } else {
+            timeout += 1;
         }
         // Update at the exact moment of a new frame to avoid frame tearing
         if ctx.nes.ppu.frame_complete {
