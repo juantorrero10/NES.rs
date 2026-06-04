@@ -6,7 +6,7 @@
 //static GLOBAL: ProfiledAllocator<std::alloc::System> = ProfiledAllocator::new(std::alloc::System, 0);
 
 use std::{
-    collections::HashMap, error::Error, ffi::OsString, fmt::Write, sync::Arc, thread::sleep, time::{Duration, Instant}
+    collections::HashMap, error::Error, ffi::OsString, fmt::Write, sync::{Arc, atomic::AtomicBool}, thread::sleep, time::{Duration, Instant}
 };
 
 use colored::Colorize;
@@ -27,13 +27,6 @@ use crate::{
 mod nes;
 mod ui;
 mod main_loop;
-
-
-
-enum RunMode {
-    Stopped,
-    Sim,
-}
 
 fn get_dissasembly(
     nes: &mut Nes,
@@ -96,8 +89,18 @@ fn get_ppu_info(
 type AudioProducer = Caching<Arc<SharedRb<Heap<f32>>>, true, false>;
 type AudioConsumer = Caching<Arc<SharedRb<Heap<f32>>>, false, true>;
 
-// CRASH JUST AS I ENTER
-fn nes_init() -> Result<(Box<Nes>, AudioConsumer), NesError> {
+pub struct AppCtx {
+    ui: AppUI,
+    nes: Nes,
+    audio_consumer: AudioConsumer,
+    is_running: AtomicBool,
+    update_info: AtomicBool,
+    breakpoint: Option<u16>,
+}
+
+
+
+fn nes_init() -> Result<Box<AppCtx>, NesError> {
     let mut args = std::env::args();
     while let Some(s) = args.next() && s.starts_with("--") {}
 
@@ -118,9 +121,16 @@ fn nes_init() -> Result<(Box<Nes>, AudioConsumer), NesError> {
     };
     let audio: SharedRb<ringbuf::storage::Heap<f32>> = SharedRb::new(AUDIO_BUFFER_SIZE);
     let (tx, rx) = audio.split();
-    let mut nes = Box::new(Nes::new(rom_path, tx)?);
-    nes.reset();
-    Ok((nes, rx))
+    let mut nes_ctx = Box::new(AppCtx {
+        ui: app_init(),
+        nes: Nes::new(rom_path, tx)?,
+        audio_consumer: rx,
+        is_running: AtomicBool::new(false),
+        update_info: AtomicBool::new(false),
+        breakpoint: None
+    });
+    nes_ctx.nes.reset()?;
+    Ok(nes_ctx)
 }
 
 fn app_init() -> AppUI {
@@ -170,9 +180,9 @@ fn main() {
             "NES Emulator panicked!".red().bold(),
             e
         ),
-        Ok((n, aud_consumer)) => {
+        Ok(n) => {
             log::info!("Emulator initialized.");
-            match main_loop::nes_loop(n, aud_consumer, app_init()) {
+            match main_loop::nes_loop(n) {
                 Err(e) => println!(
                     "{} {}: {}",
                     "Runtime".green().italic(),
@@ -180,7 +190,7 @@ fn main() {
                     e
                 ),
                 Ok(_) => {
-                    return ();
+                    return;
                 }
             }
         }

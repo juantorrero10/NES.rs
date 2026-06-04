@@ -1,28 +1,28 @@
-use std::thread;
+use std::{
+    ffi::c_void,
+    sync::atomic::{AtomicPtr, Ordering},
+    thread,
+};
 
 use raylib::{
     RaylibHandle,
-    ffi::{IsAudioStreamProcessed, UpdateAudioStream},
+    ffi::{IsAudioStreamProcessed, SetAudioStreamCallback, UpdateAudioStream},
 };
 use ringbuf::{
     SharedRb,
     traits::{Consumer, Observer},
 };
 
-use crate::main_loop::LoopBroken::PollingFailed;
 
 use super::*;
 
-pub fn nes_loop(
-    mut nes: Box<Nes>,
-    mut audio_consumer: AudioConsumer,
-    mut ui: AppUI,
-) -> Result<(), Box<dyn Error>> {
+static NES_CTX: AtomicPtr<AppCtx> = AtomicPtr::new(std::ptr::null_mut());
+
+pub fn nes_loop(mut ctx: Box<AppCtx>) -> Result<(), Box<dyn Error>> {
     let mut dissasembly = String::with_capacity(65536);
     let mut mem_page = [None; 256];
     let mut pfs = PersistentFrameState::default();
     let mut title = String::with_capacity(20);
-    let mut sim = RunMode::Stopped;
 
     // Dissasembly
     let mut ins_mapping: HashMap<u16, (usize, usize, u16)> = HashMap::with_capacity(65536);
@@ -40,13 +40,8 @@ pub fn nes_loop(
     let mut log_string = String::with_capacity(128);
 
     let mut step_instruction = true; // Step through next instruction
-    let mut real_time; // Poll audio every iteration.
     let mut frame_has_changed = true; // We may have new info so we fetch it from NES
     let mut new_frame_generated = true; // PPU has generated another frame, force App update
-
-    let mut resume_audio_at = 0;
-
-    let mut audio_buffer = [0f32; AUDIO_BUFFER_SIZE];
 
     let mut dev_mode = false;
 
@@ -60,99 +55,56 @@ pub fn nes_loop(
 
     let mut t0 = Instant::now();
 
-    // It is a pointer+len pair because we can guarantee that this will be valid for ever.
-    let (screen_ptr, screen_len) = nes.ppu.get_screen();
 
-    while !ui.raylib_handle().window_should_close() {
-        match sim {
-            RunMode::Sim => {
-                real_time = true;
+
+
+    unsafe {
+        SetAudioStreamCallback(*ctx.ui.raylib_audio_stream(), Some(nes_audio_callback));
+        NES_CTX.store(std::ptr::from_mut(ctx.as_mut()), Ordering::Release);
+    }
+
+    // It is a pointer+len pair because we can guarantee that this will be valid for ever.
+    let (screen_ptr, screen_len) = ctx.nes.ppu.get_screen();
+
+    log::info!("Starting main loop");
+
+    while !ctx.ui.raylib_handle().window_should_close() {
+        match ctx.is_running.load(Ordering::Acquire) {
+            true => {
                 // log::info!("real_time = {}", real_time);
 
-                if ui.raylib_handle().is_key_pressed(KeyboardKey::KEY_TAB) {
-                    sim = RunMode::Stopped;
+                if ctx.ui.raylib_handle().is_key_pressed(KeyboardKey::KEY_TAB) {
+                    ctx.is_running.store(false, Ordering::Release);
                 }
             }
-            RunMode::Stopped => {
-                real_time = false;
-                if ui.raylib_handle().is_key_pressed(KeyboardKey::KEY_DOWN) {
+            false => {
+                if ctx.ui.raylib_handle().is_key_pressed(KeyboardKey::KEY_DOWN) {
                     step_instruction = true;
                 }
 
-                if ui.raylib_handle().is_key_pressed(KeyboardKey::KEY_TAB) {
-                    real_time = true;
-                    sim = RunMode::Sim;
+                if ctx.ui.raylib_handle().is_key_pressed(KeyboardKey::KEY_TAB) {
+
+                    ctx.is_running.store(true, Ordering::Release);
                 }
             }
         }
 
-        if ui.raylib_handle().is_key_pressed(KeyboardKey::KEY_R) {
-            nes.reset()?;
+        if ctx.ui.raylib_handle().is_key_pressed(KeyboardKey::KEY_R) {
+            ctx.nes.reset()?;
         }
 
-        // Pressing V to jump a frame or Simulation Speed
-        if real_time {
-            match poll_real_time(
-                &mut nes,
-                &mut audio_consumer,
-                audio_buffer.as_mut_slice(),
-                resume_audio_at,
-                &mut ui,
-                bkpt,
-            )? {
-                // Just wait until next iteration
-                PollingFailed => {}
-                LoopBroken::AudioBufferPopulated => {
-                    frame_has_changed = true;
-                    pfs.mem_edit_page_changed = true;
-                    resume_audio_at = 0;
-                }
-                LoopBroken::NewFrameGenerated(r) => {
-                    resume_audio_at = r;
-                    frame_has_changed = true;
-                    pfs.mem_edit_page_changed = true;
-                    new_frame_generated = true;
-                    ui.update_game_screen(screen_ptr, screen_len);
-                    // log::info!("Ppu has new frame");
-                }
-                LoopBroken::Breakpoint => {
-                    sim = RunMode::Stopped;
-                    pfs.mem_edit_page_changed = true;
-                    frame_has_changed = true;
-                }
-            }
-            // Stepping just one by pressing S
-        } else if step_instruction {
-            // log::info!("a");
-            let mut c = 0;
-            let mut started_next = nes.cpu.state.cycles_left > 0;
-            loop {
-                //log::info!("a CL{}", nes.cpu.state.cycles_left);
-                if log {
-                    nes.clock(Some(&mut log_string))?;
-                } else {
-                    nes.clock(None)?;
-                }
-                c += 1;
-                // dbg!(nes.cpu.state.cycles_left, started_next);
-                if !started_next && nes.cpu.state.cycles_left > 0 {
-                    started_next = true;
-                }
+        if ctx.is_running.load(Ordering::Acquire) {
+            ctx.nes.controller.update_controller_status(ctx.ui.raylib_handle(), None);
+        }
 
-                if c >= 16 {
-                    break;
-                }
-
-                if started_next && nes.cpu.state.cycles_left == 0 {
-                    break;
-                }
-            }
+        if ctx.update_info.load(Ordering::Acquire) {
             pfs.mem_edit_page_changed = true;
             frame_has_changed = true;
-            fps10_draw_ctrl = 6;
+            ctx.update_info.store(false, Ordering::Release);
+            ctx.ui.update_game_screen(screen_ptr, screen_len);
         }
 
-        if ui
+        if ctx.ui
             .raylib_handle()
             .is_key_pressed(raylib::ffi::KeyboardKey::KEY_F11)
         {
@@ -161,16 +113,16 @@ pub fn nes_loop(
 
         #[cfg(feature = "log")]
         {
-            if ui.raylib_handle().is_key_pressed(KeyboardKey::KEY_L) {
-                nes.mapper.toggle_log();
-                nes.ppu.toggle_log();
-                nes.toggle_log();
-                nes.cpu.toggle_log();
+            if ctx.ui.raylib_handle().is_key_pressed(KeyboardKey::KEY_L) {
+                ctx.nes.mapper.toggle_log();
+                ctx.nes.ppu.toggle_log();
+                ctx.nes.toggle_log();
+                ctx.nes.cpu.toggle_log();
             }
         }
 
         if pfs.mem_edit_page_changed && dev_mode {
-            save_page(pfs.mem_edit_current_page, &mut nes, &mut mem_page);
+            save_page(pfs.mem_edit_current_page, &mut ctx.nes, &mut mem_page);
         }
 
         // if log && !log_string.is_empty() {
@@ -178,21 +130,21 @@ pub fn nes_loop(
         //     log_string.clear();
         // }
 
-        if ui.raylib_handle().is_key_pressed(KeyboardKey::KEY_COMMA) {
+        if ctx.ui.raylib_handle().is_key_pressed(KeyboardKey::KEY_COMMA) {
             selected_palette += 1;
             selected_palette &= 0x7;
             frame_has_changed = true;
             fps10_draw_ctrl = 6;
         }
 
-        if ui.raylib_handle().is_key_pressed(KeyboardKey::KEY_M) {
+        if ctx.ui.raylib_handle().is_key_pressed(KeyboardKey::KEY_M) {
             toggle_mapper ^= true;
         }
 
         if frame_has_changed && dev_mode {
             if fps10_draw_ctrl == 6 && !toggle_mapper {
                 get_ppu_info(
-                    &mut nes,
+                    &mut ctx.nes,
                     selected_palette,
                     &mut chr_bank_0_canvas,
                     &mut chr_bank_1_canvas,
@@ -201,14 +153,14 @@ pub fn nes_loop(
                 fps10_draw_ctrl = 0;
             }
             fps10_draw_ctrl += 1;
-            let pc = Some(nes.cpu.get_pc());
-            get_dissasembly(&mut nes, &mut ins_mapping, &mut dissasembly, pc);
+            let pc = Some(ctx.nes.cpu.get_pc());
+            get_dissasembly(&mut ctx.nes, &mut ins_mapping, &mut dissasembly, pc);
             if toggle_mapper {
                 mapper_info.clear();
-                display_mapper = nes.mapper.debug_information(&mut mapper_info);
+                display_mapper = ctx.nes.mapper.debug_information(&mut mapper_info);
             } else {
                 ppu_regs.clear();
-                nes.ppu.debug_format_registers(&mut ppu_regs);
+                ctx.nes.ppu.debug_format_registers(&mut ppu_regs);
             }
         }
 
@@ -227,7 +179,7 @@ pub fn nes_loop(
                 page_data: &mem_page,
                 modify_byte: None,
             },
-            cpu_info: (&(nes.cpu)).into(),
+            cpu_info: (&(ctx.nes.cpu)).into(),
             dissasembly: Dissassebly {
                 update: step_instruction,
                 text: &dissasembly,
@@ -261,7 +213,7 @@ pub fn nes_loop(
             }
         }*/
 
-        if  micros_since_last_frame >= FPS60_ELAPSED {
+        if micros_since_last_frame >= FPS60_ELAPSED {
             // log::info!("New frame");
             let us = micros_since_last_frame as f64;
             // if false {
@@ -284,19 +236,23 @@ pub fn nes_loop(
                 (1_000_000.0 / (us))
             );
             // log::info!("FPS: {}, Delay: {} ms, New frame? {}", 1_000_000.0 / us, us / 1000.0, new_frame_generated);
-            ui.raylib_handle()
-                .set_window_title(ui.raylib_thread(), &title);
+            ctx.ui.raylib_handle()
+                .set_window_title(ctx.ui.raylib_thread(), &title);
 
-            fs = ui.update(fs);
+            fs = ctx.ui.update(fs);
             t0 = Instant::now();
+
+            bkpt = fs.dissasembly.bkpt;
+            if let Some((a, v)) = fs.memory_editor.modify_byte {
+                ctx.nes.write(a, v)?;
+            }
+            pfs = PersistentFrameState::save_persistent_info(fs);
+        } else {
+            std::thread::yield_now();
         }
 
-        bkpt = fs.dissasembly.bkpt;
-        if let Some((a, v)) = fs.memory_editor.modify_byte {
-            nes.write(a, v)?;
-        }
 
-        pfs = PersistentFrameState::save_persistent_info(fs);
+
 
         // real_time = false;
         // log::info!("real_time = {}", real_time);
@@ -311,6 +267,51 @@ pub const AUDIO_BUFFER_SIZE: usize = 727;
 pub const FPS60_ELAPSED: u128 = 16667;
 pub const EMU_SAMPLE_RATE: u32 = 43653;
 
+unsafe extern "C" fn nes_audio_callback(buffer: *mut c_void, sample_count: u32) {
+    let ctx_ptr = NES_CTX.load(Ordering::Acquire);
+    let sample_count = sample_count as usize;
+    if ctx_ptr.is_null() {
+        unsafe {
+            std::ptr::write_bytes(buffer as *mut f32, 0, sample_count);
+            return;
+        }
+    }
+
+    let out_buffer = unsafe { std::slice::from_raw_parts_mut(buffer as *mut f32, sample_count) };
+
+    let ctx = unsafe { ctx_ptr.as_mut().unwrap() };
+
+    if !ctx.is_running.load(Ordering::Acquire) {
+        unsafe {
+            std::ptr::write_bytes(buffer as *mut f32, 0, sample_count);
+            return;
+        }
+    }
+
+    let mut n_sample = 0;
+    while n_sample < sample_count {
+        ctx.nes.clock(None).expect("Failure during nes clock");
+
+        if let Some(sample) = ctx.audio_consumer.try_pop() {
+            out_buffer[n_sample] = sample;
+            n_sample += 1;
+        }
+        // Update at the exact moment of a new frame to avoid frame tearing
+        if ctx.nes.ppu.frame_complete {
+            ctx.nes.ppu.frame_complete = false;
+            ctx.update_info.store(true, Ordering::Release)
+        }
+
+        // Breakpoint reached
+        if let Some(b) = ctx.breakpoint
+            && ctx.nes.cpu.get_pc() == b
+        {
+            ctx.is_running.store(false, Ordering::Release);
+        }
+    }
+}
+
+/*
 enum LoopBroken {
     PollingFailed,
     AudioBufferPopulated,
@@ -323,15 +324,15 @@ fn poll_real_time(
     audio_consumer: &mut AudioConsumer,
     audio_buffer: &mut [f32],
     resume_audio_at: usize,
-    ui: &mut AppUI,
+    ctx.ui: &mut AppUI,
     break_point: Option<u16>,
 ) -> Result<LoopBroken, Box<dyn Error>> {
-    if unsafe { !IsAudioStreamProcessed(*ui.raylib_audio_stream()) } {
+    if unsafe { !IsAudioStreamProcessed(*ctx.ui.raylib_audio_stream()) } {
         return Ok(LoopBroken::PollingFailed);
     }
     // A new audio sample is needed
     nes.controller
-        .update_controller_status(ui.raylib_handle(), None);
+        .update_controller_status(ctx.ui.raylib_handle(), None);
 
     let mut n_sample = resume_audio_at;
     while n_sample < AUDIO_BUFFER_SIZE {
@@ -358,10 +359,10 @@ fn poll_real_time(
 
     unsafe {
         UpdateAudioStream(
-            *ui.raylib_audio_stream(),
+            *ctx.ui.raylib_audio_stream(),
             audio_buffer.as_ptr() as *const _,
             AUDIO_BUFFER_SIZE as i32,
         );
     }
     return Ok(LoopBroken::AudioBufferPopulated);
-}
+}*/

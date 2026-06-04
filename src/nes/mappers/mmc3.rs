@@ -1,6 +1,6 @@
 use std::fmt::Write;
 
-use crate::nes::{MapperInfoReq, Nes, NesEvent, ppu};
+use crate::nes::{MapperInfoReq, NesEvent};
 
 use super::*;
 
@@ -231,10 +231,8 @@ impl Mapper for MMC3 {
 
         self.last_ppu_addr = addr;
 
-        let mut a12_happened = false;
 
         if !old_a12 && new_a12 && self.a12_filter == 3 {
-            a12_happened = true;
             if self.irq_reload {
                 self.irq_counter = self.irq_latch;
                 self.irq_reload = false;
@@ -309,6 +307,7 @@ impl Mapper for MMC3 {
         Some(NesEvent::InfoReq(MapperInfoReq::PpuAddressBus))
     }
 
+    #[allow(unused)]
     fn debug_information(&self, out: &mut String) -> bool {
         // "
         // CHR:                 PRG:
