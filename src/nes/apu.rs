@@ -13,12 +13,14 @@ pub struct Apu {
 
     frame_counter: u32,
 
-    target_frequency: f32,
-
-    sample_index: u32,
     sample_rate: u32,
 
+    pub irq_signal: bool,
+    irq_inhibit: bool,
+    sequencer_mode: bool,
+
     pulse_wave_chs: [PulseWaveChannel; 2],
+    triangle_ch: TriangleChannel,
 }
 
 #[derive(Default, Clone, Copy)]
@@ -54,7 +56,31 @@ struct PWCSweep {
     countdown: u8,
 }
 
+#[derive(Default, Clone, Copy)]
+struct TriangleChannel {
+    enabled: bool,
+    timer_reload: u16,
+    timer_countdown: u16,
+    sequence_step: usize,
+
+    settings: TCSettings,
+
+    // Length Counter
+    length_counter_load: u8,
+
+    // The Linear Counter (Specific to Triangle only!)
+    linear_counter_value: u8,
+    linear_counter_reload_flag: bool,
+}
+
+#[derive(Default, Clone, Copy)]
+struct TCSettings {
+    length_counter_halt: bool,
+    linear_counter_load: u8,
+}
+
 const NES_CPU_HZ: f64 = 1_789_773.0;
+
 
 impl Apu {
     pub fn new(aup: AudioProducer, sample_rate: u32) -> Self {
@@ -65,30 +91,36 @@ impl Apu {
             total_cycles: 0,
             frame_counter: 0,
             cycles_per_sample,
-            sample_index: 0,
             sample_rate,
-            target_frequency: 440.0,
+            irq_inhibit: false,
+            irq_signal: false,
+            sequencer_mode: false,
             pulse_wave_chs: [PulseWaveChannel::default(); 2],
+            triangle_ch: TriangleChannel::default()
         }
     }
 
     // Runs at 1.79 Mhz
     pub fn clock(&mut self, _nes: *mut Nes) {
         self.total_cycles += 1;
-        if self.total_cycles % 2 == 0 {
-            self.sequencer_update();
-        }
+        
+        self.sequencer_update();
 
         if self.total_cycles % 2 == 0 {
             self.frame_counter += 1;
+            // 4 step
             match self.frame_counter {
-                3729 | 11186 => self.envelope_update(),
+                3729 | 11186 => { self.envelope_update(); self.linear_counter_update();}
                 7457 | 14916 => {
                     self.envelope_update();
+                    self.linear_counter_update();
                     self.length_counter_update();
                     self.sweep_update();
                     if self.frame_counter == 14916 {
                         self.frame_counter = 0;
+                        if !self.irq_inhibit && !self.sequencer_mode {
+                            self.irq_signal = true;
+                        }
                     }
                 }
                 _ => {}
@@ -105,20 +137,22 @@ impl Apu {
         // 3. Sample the outputs from both pulse channels
         let sample_p1 = self.digital_pulse_wave_sample(&self.pulse_wave_chs[0]);
         let sample_p2 = self.digital_pulse_wave_sample(&self.pulse_wave_chs[1]);
+        let sample_t = self.digital_triangle_wave_sample();
 
-        // High pass / Low pass mixer formula placeholder.
-        // For now, simple linear blending will get you clear audio:
-        let mixed_sample = 95.88 / ((8192.0 / (sample_p1 + sample_p2)) + 100.0);
+        let mixed_sample = 1.5 * Self::mix_samples(sample_p1, sample_p2, sample_t, 0.0, 0.0);
 
         // Push down to the lockless consumer buffer
         let _ = self.producer.try_push(mixed_sample);
+    }
 
-        self.sample_index += 1;
+    fn mix_samples(pw1: f32, pw2: f32, triangle: f32, noise: f32, dmc: f32) -> f32 {
+        let pulses = 95.88 / ((8192.0 / (pw1 + pw2)) + 100.0);
+        let rest =
+            159.79 / (1.0 / ((triangle / 8227.0) + (noise / 12241.0) + (dmc / 22638.0)) + 100.0);
+        pulses + rest
     }
 
     fn digital_pulse_wave_sample(&self, ch: &PulseWaveChannel) -> f32 {
-
-
         // Gating
         if !ch.enabled || !(8..=0x7ff).contains(&ch.timer_reload) || ch.length_counter_load == 0 {
             return 0.0;
@@ -145,15 +179,51 @@ impl Apu {
         }
     }
 
+    fn digital_triangle_wave_sample(&self) -> f32 {
+        let ch = &self.triangle_ch;
+
+        // Gating: If disabled, either counter hits 0, or timer_reload is ultrasonic (< 2)
+        if !ch.enabled 
+            || ch.timer_reload < 2 
+            || ch.length_counter_load == 0 
+            // Note: linear_counter_value is what you update at 240Hz instead of an envelope
+            || ch.linear_counter_value == 0 
+        {
+            return 0.0;
+        }
+
+        // Fixed hardcoded 32-step triangle waveform sequencer steps
+        const TRIANGLE_SEQUENCE: [u8; 32] = [
+            15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0,
+            0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15
+        ];
+
+        // Return the raw sequence step value (0.0 to 15.0)
+        // The APU mixer will downscale and normalize this automatically later.
+        TRIANGLE_SEQUENCE[ch.sequence_step] as f32
+    }
+
     #[inline]
     fn sequencer_update(&mut self) {
-        for ch in self.pulse_wave_chs.iter_mut() {
-            if ch.timer_countdown == 0 {
-                ch.timer_countdown = ch.timer_reload + 1;
-                ch.sequence_step = (ch.sequence_step + 1) % 8;
-            } else {
-                ch.timer_countdown -= 1;
+        if self.total_cycles % 2 == 0 {
+            for ch in self.pulse_wave_chs.iter_mut() {
+                if ch.timer_countdown == 0 {
+                    ch.timer_countdown = ch.timer_reload + 1;
+                    ch.sequence_step = (ch.sequence_step + 1) % 8;
+                } else {
+                    ch.timer_countdown -= 1;
+                }
             }
+        }
+        let ch = &mut self.triangle_ch;
+        if ch.timer_countdown == 0 {
+            ch.timer_countdown = ch.timer_reload + 1;
+            
+            if ch.length_counter_load > 0 && ch.linear_counter_value > 0 && ch.timer_reload >= 2 {
+                ch.sequence_step = (ch.sequence_step + 1) % 32;
+            }
+        } else {
+            ch.timer_countdown -= 1;
         }
     }
 
@@ -194,9 +264,25 @@ impl Apu {
     #[inline]
     fn length_counter_update(&mut self) {
         for ch in &mut self.pulse_wave_chs {
-            if !ch.settings.length_counter_halt && ch.length_counter_load > 0 {
+            if !ch.settings.length_counter_halt && ch.length_counter_load > 0 && ch.enabled {
                 ch.length_counter_load -= 1;
             }
+        }
+    }
+
+    fn linear_counter_update(&mut self) {
+        let ch = &mut self.triangle_ch;
+        
+        if ch.linear_counter_reload_flag {
+            ch.linear_counter_value = ch.settings.linear_counter_load;
+        } else if ch.linear_counter_value > 0 {
+            ch.linear_counter_value -= 1;
+        }
+        
+        // If the control flag (length_counter_halt) is clear, 
+        // the reload flag clears itself every step so the counter can tick down.
+        if !ch.settings.length_counter_halt {
+            ch.linear_counter_reload_flag = false;
         }
     }
 
@@ -273,15 +359,46 @@ impl Apu {
         }
     }
 
+    fn modify_triangle_channel(&mut self, mut byte_off: u8, data: u8) {
+        byte_off &= 0x3;
+        match byte_off {
+            0 => {
+                self.triangle_ch.settings = TCSettings {
+                    length_counter_halt: (data & 0x80) != 0,
+                    linear_counter_load: data & 0x7f,
+                };
+            }
+            1 => {}
+            2 => {
+                self.triangle_ch.timer_reload = (self.triangle_ch.timer_reload & 0x0700) | data as u16;
+            }
+            3 => {
+                let length_table = [
+                    10, 254, 20, 2, 40, 4, 80, 6, 160, 8, 60, 10, 14, 12, 26, 14, 12, 16, 24, 18,
+                    48, 20, 96, 22, 192, 24, 72, 26, 16, 28, 32, 30,
+                ];
+                let len_idx = ((data & !0x7) >> 3) as usize;
+                self.triangle_ch.length_counter_load = length_table[len_idx];
+                self.triangle_ch.timer_reload = (self.triangle_ch.timer_reload & 0x00FF) | (data as u16 & 0x7) << 8;
+
+                self.triangle_ch.linear_counter_reload_flag = true;
+            }
+            _ => unreachable!()
+        }
+    }
+
     pub fn event_cpu_has_written(&mut self, addr: u16, data: u8) {
         match addr {
             0x4000..=0x4003 => self.modify_pulse_wave_channel(0, (addr as u8) & 0x3, data),
             0x4004..=0x4007 => self.modify_pulse_wave_channel(1, (addr as u8) & 0x3, data),
+            0x4008..=0x400B => self.modify_triangle_channel((addr as u8) & 0x3, data),
             0x4015 => {
                 let enable_pwc1 = data & 0x01 != 0;
                 let enable_pwc2 = data & 0x02 != 0;
+                let enable_trig = data & 0x04 != 0;
                 self.pulse_wave_chs[0].enabled = enable_pwc1;
                 self.pulse_wave_chs[1].enabled = enable_pwc2;
+                self.triangle_ch.enabled = enable_trig;
 
                 if !enable_pwc1 {
                     self.pulse_wave_chs[0].length_counter_load = 0;
@@ -290,6 +407,17 @@ impl Apu {
                 if !enable_pwc2 {
                     self.pulse_wave_chs[1].length_counter_load = 0;
                 }
+
+                if !enable_trig {
+                    self.triangle_ch.length_counter_load = 0;
+                }
+            }
+            0x4017 => {
+                self.sequencer_mode = (data & 0x80) != 0;
+                if self.sequencer_mode {
+                    self.length_counter_update();
+                }
+                self.irq_inhibit = (data & 0x40) != 0;
             }
             _ => {}
         }
@@ -309,6 +437,11 @@ impl Apu {
         if self.pulse_wave_chs[1].length_counter_load > 0 {
             ret |= 0x02;
         }
+
+        if self.triangle_ch.length_counter_load > 0 {
+            ret |= 0x04;
+        }
+
 
         ret
     }
