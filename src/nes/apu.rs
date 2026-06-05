@@ -478,6 +478,8 @@ impl Apu {
         if ch.sample_buffer.is_none() && ch.bytes_remaining > 0 {
             let data = nes.read(ch.current_address)?;
             ch.sample_buffer = Some(data);
+            // Stal CPU 4 cycles
+            nes.cpu.state.cycles_left += 4;
             
             if ch.current_address == 0xFFFF {
                 ch.current_address = 0x8000;
