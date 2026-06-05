@@ -3,13 +3,8 @@ use std::{
     sync::atomic::{AtomicPtr, Ordering},
 };
 
-use raylib::{
-    ffi::{SetAudioStreamCallback},
-};
-use ringbuf::{
-    traits::{Consumer},
-};
-
+use raylib::ffi::SetAudioStreamCallback;
+use ringbuf::traits::Consumer;
 
 use super::*;
 
@@ -52,9 +47,6 @@ pub fn nes_loop(mut ctx: Box<AppCtx>) -> Result<(), Box<dyn Error>> {
 
     let mut t0 = Instant::now();
 
-
-
-
     unsafe {
         SetAudioStreamCallback(*ctx.ui.raylib_audio_stream(), Some(nes_audio_callback));
         NES_CTX.store(std::ptr::from_mut(ctx.as_mut()), Ordering::Release);
@@ -66,32 +58,10 @@ pub fn nes_loop(mut ctx: Box<AppCtx>) -> Result<(), Box<dyn Error>> {
     log::info!("Starting main loop");
 
     while !ctx.ui.raylib_handle().window_should_close() {
-        match ctx.is_running.load(Ordering::Acquire) {
-            true => {
-                // log::info!("real_time = {}", real_time);
-
-                if ctx.ui.raylib_handle().is_key_pressed(KeyboardKey::KEY_TAB) {
-                    ctx.is_running.store(false, Ordering::Release);
-                }
-            }
-            false => {
-                if ctx.ui.raylib_handle().is_key_pressed(KeyboardKey::KEY_DOWN) {
-                    step_instruction = true;
-                }
-
-                if ctx.ui.raylib_handle().is_key_pressed(KeyboardKey::KEY_TAB) {
-
-                    ctx.is_running.store(true, Ordering::Release);
-                }
-            }
-        }
-
-        if ctx.ui.raylib_handle().is_key_pressed(KeyboardKey::KEY_R) {
-            ctx.nes.reset()?;
-        }
-
         if ctx.is_running.load(Ordering::Acquire) {
-            ctx.nes.controller.update_controller_status(ctx.ui.raylib_handle(), None);
+            ctx.nes
+                .controller
+                .update_controller_status(ctx.ui.raylib_handle(), None);
         }
 
         if ctx.update_info.load(Ordering::Acquire) {
@@ -99,13 +69,6 @@ pub fn nes_loop(mut ctx: Box<AppCtx>) -> Result<(), Box<dyn Error>> {
             frame_has_changed = true;
             ctx.update_info.store(false, Ordering::Release);
             ctx.ui.update_game_screen(screen_ptr, screen_len);
-        }
-
-        if ctx.ui
-            .raylib_handle()
-            .is_key_pressed(raylib::ffi::KeyboardKey::KEY_F11)
-        {
-            dev_mode ^= true;
         }
 
         #[cfg(feature = "log")]
@@ -126,17 +89,6 @@ pub fn nes_loop(mut ctx: Box<AppCtx>) -> Result<(), Box<dyn Error>> {
         //     print!("{}\n", log_string);
         //     log_string.clear();
         // }
-
-        if ctx.ui.raylib_handle().is_key_pressed(KeyboardKey::KEY_COMMA) {
-            selected_palette += 1;
-            selected_palette &= 0x7;
-            frame_has_changed = true;
-            fps10_draw_ctrl = 6;
-        }
-
-        if ctx.ui.raylib_handle().is_key_pressed(KeyboardKey::KEY_M) {
-            toggle_mapper ^= true;
-        }
 
         if frame_has_changed && dev_mode {
             if fps10_draw_ctrl == 6 && !toggle_mapper {
@@ -211,6 +163,7 @@ pub fn nes_loop(mut ctx: Box<AppCtx>) -> Result<(), Box<dyn Error>> {
         }*/
 
         if micros_since_last_frame >= FPS60_ELAPSED {
+            handle_keys(&mut ctx, &mut step_instruction, &mut dev_mode, &mut selected_palette, &mut frame_has_changed, &mut fps10_draw_ctrl, &mut toggle_mapper)?;
             // log::info!("New frame");
             let us = micros_since_last_frame as f64;
             // if false {
@@ -233,7 +186,8 @@ pub fn nes_loop(mut ctx: Box<AppCtx>) -> Result<(), Box<dyn Error>> {
                 (1_000_000.0 / (us))
             );
             // log::info!("FPS: {}, Delay: {} ms, New frame? {}", 1_000_000.0 / us, us / 1000.0, new_frame_generated);
-            ctx.ui.raylib_handle()
+            ctx.ui
+                .raylib_handle()
                 .set_window_title(ctx.ui.raylib_thread(), &title);
 
             fs = ctx.ui.update(fs);
@@ -248,14 +202,67 @@ pub fn nes_loop(mut ctx: Box<AppCtx>) -> Result<(), Box<dyn Error>> {
             std::thread::yield_now();
         }
 
-
-
-
         // real_time = false;
         // log::info!("real_time = {}", real_time);
         step_instruction = false;
         frame_has_changed = false;
         new_frame_generated = false;
+    }
+    Ok(())
+}
+
+fn handle_keys(
+    ctx: &mut AppCtx,
+    step_instruction: &mut bool,
+    dev_mode: &mut bool,
+    selected_palette: &mut u16,
+    frame_has_changed: &mut bool,
+    fps10_draw_ctrl: &mut i32,
+    toggle_mapper: &mut bool,
+) -> Result<(), Box<dyn Error>> {
+    match ctx.is_running.load(Ordering::Acquire) {
+        true => {
+            // log::info!("real_time = {}", real_time);
+
+            if ctx.ui.raylib_handle().is_key_pressed(KeyboardKey::KEY_TAB) {
+                ctx.is_running.store(false, Ordering::Release);
+            }
+        }
+        false => {
+            if ctx.ui.raylib_handle().is_key_pressed(KeyboardKey::KEY_DOWN) {
+                *step_instruction = true;
+            }
+
+            if ctx.ui.raylib_handle().is_key_pressed(KeyboardKey::KEY_TAB) {
+                ctx.is_running.store(true, Ordering::Release);
+            }
+        }
+    }
+
+    if ctx.ui.raylib_handle().is_key_pressed(KeyboardKey::KEY_R) {
+        ctx.nes.reset()?;
+    }
+
+    if ctx
+        .ui
+        .raylib_handle()
+        .is_key_pressed(raylib::ffi::KeyboardKey::KEY_F11)
+    {
+        *dev_mode ^= true;
+    }
+    if ctx
+        .ui
+        .raylib_handle()
+        .is_key_pressed(KeyboardKey::KEY_COMMA)
+    {
+        *selected_palette += 1;
+        *selected_palette &= 0x7;
+        *frame_has_changed = true;
+        *fps10_draw_ctrl = 6;
+    }
+
+    if ctx.ui.raylib_handle().is_key_pressed(KeyboardKey::KEY_M) {
+        *toggle_mapper ^= true;
     }
     Ok(())
 }
