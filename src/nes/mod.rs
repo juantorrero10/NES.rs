@@ -198,10 +198,10 @@ impl Nes {
             self.cpu.nmi(instance);
             self.ppu.nmi_signal = false;
         }
+        
         self.apu.clock(instance);
-        if self.apu.irq_signal {
+        if self.apu.irq_pending() {
             self.cpu.irq(instance);
-            self.apu.irq_signal = false;
         }
         self.cpu.clock(None, instance, &mut self.mapper);
 

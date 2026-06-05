@@ -2,7 +2,7 @@ use core::f32;
 
 use ringbuf::traits::Producer;
 
-use crate::{AudioProducer, nes::Nes};
+use crate::{AudioProducer, nes::{Nes, NesError}};
 
 pub struct Apu {
     producer: AudioProducer,
@@ -15,13 +15,16 @@ pub struct Apu {
 
     sample_rate: u32,
 
-    pub irq_signal: bool,
-    irq_inhibit: bool,
+    frame_irq_signal: bool,
+    frame_irq_inhibit: bool,
     sequencer_mode: bool,
 
     pulse_wave_chs: [PulseWaveChannel; 2],
     triangle_ch: TriangleWaveChannel,
-    noise_ch: NoiseChannel
+    noise_ch: NoiseChannel,
+    dmc_ch: DmcChannel,
+
+    irq_pending: bool,
 }
 
 #[derive(Default, Clone, Copy)]
@@ -98,17 +101,17 @@ struct NoiseChannel {
 
 impl Default for NoiseChannel {
     fn default() -> Self {
-        Self { 
-            enabled: false, 
-            settings: NCSettings::default(), 
-            noise_mode: false, 
-            noise_period: 0, 
+        Self {
+            enabled: false,
+            settings: NCSettings::default(),
+            noise_mode: false,
+            noise_period: 0,
             timer_countdown: 0,
-            length_counter_load: 0, 
-            shift_register: 1, 
-            envelope_start: false, 
-            envelope_volume: 0, 
-            envolope_divider: 0
+            length_counter_load: 0,
+            shift_register: 1,
+            envelope_start: false,
+            envelope_volume: 0,
+            envolope_divider: 0,
         }
     }
 }
@@ -120,16 +123,52 @@ struct NCSettings {
     envelope: u8,
 }
 
-const LENGTH_LUT: [u8; 32] = 
-[
-    10, 254, 20, 2, 40, 4, 80, 6, 160, 8, 60, 10, 14, 12, 26, 14, 12, 16, 24, 18,
-    48, 20, 96, 22, 192, 24, 72, 26, 16, 28, 32, 30,
+#[derive(Default, Clone, Copy)]
+struct DmcChannel {
+    enabled: bool,
+
+    // Flags from $4010
+    irq_enable: bool,
+    loop_flag: bool,
+    frequency: u8,
+
+    // Timer registers
+    timer_reload: u16,
+    timer_countdown: u16,
+
+    // Memory Reader registers
+    sample_address: u16,  // The base address calculated from $4012
+    sample_length: u16,   // The total length calculated from $4013
+    current_address: u16, // Where the reader is currently looking
+    bytes_remaining: u16, // How many bytes are left to fetch
+
+    // Audio Buffer & Shift Register
+    sample_buffer: Option<u8>, // None = empty, Some(byte) = full
+    shift_register: u8,
+    bits_remaining: u8, // Ticks down from 8 to 0
+    silence_flag: bool,
+
+    load_counter: u8,
+
+    // Separate signal from the frame counter IRQ to distinguish them in code.
+    irq_signal: bool,
+
+}
+
+const LENGTH_LUT: [u8; 32] = [
+    10, 254, 20, 2, 40, 4, 80, 6, 160, 8, 60, 10, 14, 12, 26, 14, 12, 16, 24, 18, 48, 20, 96, 22,
+    192, 24, 72, 26, 16, 28, 32, 30,
 ];
 
-const NOISE_PERIOD_LUT: [u16; 16] =  [4, 8, 16, 32, 64, 96, 128, 160, 202, 254, 380, 508, 762, 1016, 2034, 4068];
+const NOISE_PERIOD_LUT: [u16; 16] = [
+    4, 8, 16, 32, 64, 96, 128, 160, 202, 254, 380, 508, 762, 1016, 2034, 4068,
+];
+
+const DMC_PERIOD_LUT: [u16; 16] = [
+    428, 380, 340, 320, 286, 254, 226, 214, 190, 160, 142, 128, 106, 84, 72, 54,
+];
 
 const NES_CPU_HZ: f64 = 1_789_773.0;
-
 
 impl Apu {
     pub fn new(aup: AudioProducer, sample_rate: u32) -> Self {
@@ -141,26 +180,33 @@ impl Apu {
             frame_counter: 0,
             cycles_per_sample,
             sample_rate,
-            irq_inhibit: false,
-            irq_signal: false,
+            frame_irq_inhibit: false,
+            frame_irq_signal: false,
             sequencer_mode: false,
             pulse_wave_chs: [PulseWaveChannel::default(); 2],
             triangle_ch: TriangleWaveChannel::default(),
-            noise_ch: NoiseChannel::default()
+            noise_ch: NoiseChannel::default(),
+            dmc_ch: DmcChannel::default(),
+
+            irq_pending: false
         }
     }
 
     // Runs at 1.79 Mhz
-    pub fn clock(&mut self, _nes: *mut Nes) {
+    pub fn clock(&mut self, nes: *mut Nes) {
         self.total_cycles += 1;
-        
+
         self.sequencer_update();
+        self.dmc_update(nes).unwrap();
 
         if self.total_cycles % 2 == 0 {
             self.frame_counter += 1;
             // 4 step
             match self.frame_counter {
-                3729 | 11186 => { self.envelope_update(); self.linear_counter_update();}
+                3729 | 11186 => {
+                    self.envelope_update();
+                    self.linear_counter_update();
+                }
                 7457 | 14916 => {
                     self.envelope_update();
                     self.linear_counter_update();
@@ -168,8 +214,11 @@ impl Apu {
                     self.sweep_update();
                     if self.frame_counter == 14916 {
                         self.frame_counter = 0;
-                        if !self.irq_inhibit && !self.sequencer_mode {
-                            self.irq_signal = true;
+                        if !self.frame_irq_inhibit && !self.sequencer_mode {
+                            if !self.frame_irq_signal {
+                                self.frame_irq_signal = true;
+                                self.irq_pending = true;
+                            } 
                         }
                     }
                 }
@@ -189,8 +238,9 @@ impl Apu {
         let sample_p2 = self.digital_pulse_wave_sample(&self.pulse_wave_chs[1]);
         let sample_t = self.digital_triangle_wave_sample();
         let sample_n = self.digital_noise_sample();
+        let sample_d = self.dmc_ch.load_counter as f32;
 
-        let mixed_sample = 1.5 * Self::mix_samples(sample_p1, sample_p2, sample_t, sample_n, 0.0);
+        let mixed_sample = 1.5 * Self::mix_samples(sample_p1, sample_p2, sample_t, sample_n, sample_d);
 
         // Push down to the lockless consumer buffer
         let _ = self.producer.try_push(mixed_sample);
@@ -233,18 +283,18 @@ impl Apu {
     fn digital_triangle_wave_sample(&self) -> f32 {
         let ch = &self.triangle_ch;
 
-        if !ch.enabled 
-            || ch.timer_reload < 2 
-            || ch.length_counter_load == 0 
-            || ch.linear_counter_value == 0 
+        if !ch.enabled
+            || ch.timer_reload < 2
+            || ch.length_counter_load == 0
+            || ch.linear_counter_value == 0
         {
             return 0.0;
         }
 
         // Fixed hardcoded 32-step triangle waveform sequencer steps
         const TRIANGLE_SEQUENCE: [u8; 32] = [
-            15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0,
-            0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15
+            15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
+            11, 12, 13, 14, 15,
         ];
 
         // Return the raw sequence step value (0.0 to 15.0)
@@ -255,9 +305,7 @@ impl Apu {
     fn digital_noise_sample(&self) -> f32 {
         let ch = &self.noise_ch;
 
-        if !ch.enabled 
-            || ch.length_counter_load == 0 
-        {
+        if !ch.enabled || ch.length_counter_load == 0 {
             return 0.0;
         }
 
@@ -289,7 +337,8 @@ impl Apu {
             if ch.timer_countdown == 0 {
                 ch.timer_countdown = ch.noise_period + 1;
                 let shift_amount = if ch.noise_mode { 6 } else { 1 };
-                let feedback = (ch.shift_register & 0x1) ^ ((ch.shift_register >> shift_amount) & 0x1);
+                let feedback =
+                    (ch.shift_register & 0x1) ^ ((ch.shift_register >> shift_amount) & 0x1);
 
                 ch.shift_register >>= 1;
                 ch.shift_register |= feedback << 14;
@@ -297,10 +346,11 @@ impl Apu {
                 ch.timer_countdown -= 1;
             }
         }
+        // Triangle channel
         let ch = &mut self.triangle_ch;
         if ch.timer_countdown == 0 {
             ch.timer_countdown = ch.timer_reload + 1;
-            
+
             if ch.length_counter_load > 0 && ch.linear_counter_value > 0 && ch.timer_reload >= 2 {
                 ch.sequence_step = (ch.sequence_step + 1) % 32;
             }
@@ -358,58 +408,131 @@ impl Apu {
 
     fn linear_counter_update(&mut self) {
         let ch = &mut self.triangle_ch;
-        
+
         if ch.linear_counter_reload_flag {
             ch.linear_counter_value = ch.settings.linear_counter_load;
         } else if ch.linear_counter_value > 0 {
             ch.linear_counter_value -= 1;
         }
-        
-        // If the control flag (length_counter_halt) is clear, 
+
+        // If the control flag (length_counter_halt) is clear,
         // the reload flag clears itself every step so the counter can tick down.
         if !ch.settings.length_counter_halt {
             ch.linear_counter_reload_flag = false;
         }
     }
 
+    #[inline]
+    fn channel_envelope_update(
+        start: &mut bool,
+        volume: &mut u8,
+        divider: &mut u8,
+        divider_reload: u8,
+        lch: bool,
+    ) {
+        if *start {
+            *start = false;
+            *volume = 15;
+            *divider = divider_reload;
+            return;
+        }
+
+        if *divider != 0 {
+            *divider -= 1;
+            return;
+        }
+        *divider = divider_reload;
+        if *volume > 0 {
+            *volume -= 1;
+        } else if lch {
+            *volume = 15;
+        }
+    }
+
     fn envelope_update(&mut self) {
         // PW Envelope update
         for ch in &mut self.pulse_wave_chs {
-            if ch.envelope_start {
-                ch.envelope_start = false;
-                ch.envelope_volume = 15;
-                ch.envolope_divider = ch.settings.envelope;
-                continue;
-            }
-
-            if ch.envolope_divider != 0 {
-                ch.envolope_divider -= 1;
-                continue;
-            }
-            ch.envolope_divider = ch.settings.envelope;
-            if ch.envelope_volume > 0 {
-                ch.envelope_volume -= 1;
-            } else if ch.settings.length_counter_halt {
-                ch.envelope_volume = 15;
-            }
+            Self::channel_envelope_update(
+                &mut ch.envelope_start,
+                &mut ch.envelope_volume,
+                &mut ch.envolope_divider,
+                ch.settings.envelope,
+                ch.settings.length_counter_halt,
+            );
         }
         // Noise channel
         let ch = &mut self.noise_ch;
-        if ch.envelope_start {
-            ch.envelope_start = false;
-            ch.envelope_volume = 15;
-            ch.envolope_divider = ch.settings.envelope;
-        } else if ch.envolope_divider != 0 {
-            ch.envolope_divider -= 1;
-        } else {
-            ch.envolope_divider = ch.settings.envelope;
-            if ch.envelope_volume > 0 {
-                ch.envelope_volume -= 1;
-            } else if ch.settings.length_counter_halt {
-                ch.envelope_volume = 15;
+        Self::channel_envelope_update(
+            &mut ch.envelope_start,
+            &mut ch.envelope_volume,
+            &mut ch.envolope_divider,
+            ch.settings.envelope,
+            ch.settings.length_counter_halt,
+        );
+    }
+
+    fn dmc_update(&mut self, nes: *mut Nes) -> Result<(), NesError>{
+        let nes = unsafe { nes.as_mut().unwrap() };
+        let ch = &mut self.dmc_ch;
+
+        if ch.sample_buffer.is_none() && ch.bytes_remaining > 0 {
+            let data = nes.read(ch.current_address)?;
+            ch.sample_buffer = Some(data);
+            
+            if ch.current_address == 0xFFFF {
+                ch.current_address = 0x8000;
+            } else {
+                ch.current_address += 1;
+            }
+
+            ch.bytes_remaining -= 1;
+            if ch.bytes_remaining == 0 {
+                if ch.loop_flag {
+                    // Restart sample playback automatically if loop is enabled
+                    ch.current_address = ch.sample_address;
+                    ch.bytes_remaining = ch.sample_length;
+                } else if ch.irq_enable && !ch.irq_signal {
+                    // Fire the IRQ edge trigger if loops are disabled
+                    ch.irq_signal = true;
+                    self.irq_pending = true; 
+                }
             }
         }
 
+        if ch.timer_countdown != 0 {
+            ch.timer_countdown -= 1;
+            return Ok(())
+        }
+
+        ch.timer_countdown = ch.timer_reload + 1;
+        if !ch.silence_flag {
+            let bit = ch.shift_register & 0x1;
+
+            if bit == 1 {
+                if ch.load_counter <= 125 { ch.load_counter += 2; }
+            } else {
+                if ch.load_counter >= 2 { ch.load_counter -= 2; }
+            }
+        }
+
+        ch.shift_register >>= 1;
+        ch.bits_remaining = ch.bits_remaining.saturating_sub(1);
+
+        if ch.bits_remaining == 0 {
+            ch.bits_remaining = 8;
+            match ch.sample_buffer {
+                Some(b) => {
+                    ch.sample_buffer = None;
+                    ch.shift_register = b;
+                    ch.silence_flag = false;
+                }
+                None => {
+                    ch.silence_flag = true;
+                }
+            }
+        } 
+        
+        Ok(())
     }
 
     fn modify_pulse_wave_channel(&mut self, mut no: usize, mut byte_off: u8, data: u8) {
@@ -468,16 +591,18 @@ impl Apu {
             }
             1 => {}
             2 => {
-                self.triangle_ch.timer_reload = (self.triangle_ch.timer_reload & 0x0700) | data as u16;
+                self.triangle_ch.timer_reload =
+                    (self.triangle_ch.timer_reload & 0x0700) | data as u16;
             }
             3 => {
                 let len_idx = ((data & !0x7) >> 3) as usize;
                 self.triangle_ch.length_counter_load = LENGTH_LUT[len_idx];
-                self.triangle_ch.timer_reload = (self.triangle_ch.timer_reload & 0x00FF) | (data as u16 & 0x7) << 8;
+                self.triangle_ch.timer_reload =
+                    (self.triangle_ch.timer_reload & 0x00FF) | (data as u16 & 0x7) << 8;
 
                 self.triangle_ch.linear_counter_reload_flag = true;
             }
-            _ => unreachable!()
+            _ => unreachable!(),
         }
     }
 
@@ -487,9 +612,9 @@ impl Apu {
         match byte_off {
             0 => {
                 ch.settings = NCSettings {
-                    length_counter_halt: (data & 0x20) != 0, 
-                    constant_volume: (data & 0x10) != 0, 
-                    envelope: (data & 0x0F)
+                    length_counter_halt: (data & 0x20) != 0,
+                    constant_volume: (data & 0x10) != 0,
+                    envelope: (data & 0x0F),
                 };
             }
             1 => {}
@@ -506,6 +631,33 @@ impl Apu {
                 ch.envelope_volume = 15;
                 ch.envolope_divider = ch.settings.envelope;
             }
+            _ => unreachable!(),
+        }
+    }
+
+    fn modify_dmc_channel(&mut self, mut byte_off: u8, data: u8) {
+        byte_off &= 0x3;
+        let ch = &mut self.dmc_ch;
+        match byte_off {
+            0 => {
+                ch.irq_enable = (data & 0x80) != 0;
+                ch.loop_flag = (data & 0x40) != 0;
+
+                ch.timer_reload = DMC_PERIOD_LUT[(data & 0x0F) as usize];
+
+                if !ch.irq_enable {
+                    ch.irq_signal = false;
+                }
+            }
+            1 => {
+                ch.load_counter = (data & 0x7f) >> 1;
+            }
+            2 => {
+                ch.sample_address = 0xC000 | (data as u16) << 6;
+            }
+            3 => {
+                ch.sample_length = (data as u16) << 4 | 1;
+            }
             _ => unreachable!()
         }
     }
@@ -516,15 +668,18 @@ impl Apu {
             0x4004..=0x4007 => self.modify_pulse_wave_channel(1, (addr as u8) & 0x3, data),
             0x4008..=0x400B => self.modify_triangle_channel((addr as u8) & 0x3, data),
             0x400C..=0x400F => self.modify_noise_channel((addr as u8) & 0x3, data),
+            0x4010..=0x4013 => self.modify_dmc_channel((addr as u8) & 0x3, data),
             0x4015 => {
                 let enable_pwc1 = data & 0x01 != 0;
                 let enable_pwc2 = data & 0x02 != 0;
                 let enable_trig = data & 0x04 != 0;
                 let enable_noise = data & 0x08 != 0;
+                let enable_dmc = data & 0x10 != 0;
                 self.pulse_wave_chs[0].enabled = enable_pwc1;
                 self.pulse_wave_chs[1].enabled = enable_pwc2;
                 self.triangle_ch.enabled = enable_trig;
                 self.noise_ch.enabled = enable_noise;
+                self.dmc_ch.enabled = enable_dmc;
 
                 if !enable_pwc1 {
                     self.pulse_wave_chs[0].length_counter_load = 0;
@@ -541,19 +696,26 @@ impl Apu {
                 if !enable_noise {
                     self.noise_ch.length_counter_load = 0;
                 }
+
+                if !enable_dmc {
+                    self.dmc_ch.bytes_remaining = 0;
+                } else if self.dmc_ch.bytes_remaining == 0{
+                    self.dmc_ch.current_address = self.dmc_ch.sample_address;
+                    self.dmc_ch.bytes_remaining = self.dmc_ch.sample_length;
+                }
             }
             0x4017 => {
                 self.sequencer_mode = (data & 0x80) != 0;
                 if self.sequencer_mode {
                     self.length_counter_update();
                 }
-                self.irq_inhibit = (data & 0x40) != 0;
+                self.frame_irq_inhibit = (data & 0x40) != 0;
             }
             _ => {}
         }
     }
 
-    pub fn event_cpu_has_read(&self, addr: u16) -> u8 {
+    pub fn event_cpu_has_read(&mut self, addr: u16) -> u8 {
         if addr != 0x4015 {
             return 0;
         }
@@ -576,7 +738,28 @@ impl Apu {
             ret |= 0x08;
         }
 
+        if self.dmc_ch.bytes_remaining > 0 {
+            ret |= 0x10;
+        }
+
+        if self.frame_irq_signal {
+            ret |= 0x40;
+            self.frame_irq_signal = false;
+        }
+
+        if self.dmc_ch.irq_signal {
+            ret |= 0x80;
+        }
 
         ret
+    }
+
+    #[inline(always)]
+    pub fn irq_pending(&mut self) -> bool {
+        if self.irq_pending {
+            self.irq_pending = false;
+            return true;
+        }
+        false
     }
 }
