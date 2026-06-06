@@ -147,7 +147,7 @@ impl BusPpu {
     #[inline(always)]
     pub fn write(&mut self, addr: u16, data: u8, mapper: &mut Box<dyn Mapper>) {
         self.open_bus_sim = data;
-        match self.resolve_addr(addr, data, false, mapper, false, true) {
+        match self.resolve_addr(addr, data, true, mapper, false, true) {
             Memory(r) => {
                 *r = data;
             }

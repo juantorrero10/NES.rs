@@ -2,7 +2,10 @@ use core::f32;
 
 use ringbuf::traits::Producer;
 
-use crate::{AudioProducer, nes::{Nes, NesError}};
+use crate::{
+    AudioProducer,
+    nes::{Nes, NesError},
+};
 
 pub struct Apu {
     producer: AudioProducer,
@@ -25,6 +28,9 @@ pub struct Apu {
     dmc_ch: DmcChannel,
 
     irq_pending: bool,
+
+    hpf90: HighPassFilter,
+    lpf21k: LowPassFilter,
 }
 
 #[derive(Default, Clone, Copy)]
@@ -152,7 +158,6 @@ struct DmcChannel {
 
     // Separate signal from the frame counter IRQ to distinguish them in code.
     irq_signal: bool,
-
 }
 
 const LENGTH_LUT: [u8; 32] = [
@@ -188,7 +193,10 @@ impl Apu {
             noise_ch: NoiseChannel::default(),
             dmc_ch: DmcChannel::default(),
 
-            irq_pending: false
+            irq_pending: false,
+
+            hpf90: HighPassFilter::new(sample_rate, 90.0),
+            lpf21k: LowPassFilter::new(sample_rate, 21000.0),
         }
     }
 
@@ -218,7 +226,7 @@ impl Apu {
                             if !self.frame_irq_signal {
                                 self.frame_irq_signal = true;
                                 self.irq_pending = true;
-                            } 
+                            }
                         }
                     }
                 }
@@ -238,12 +246,32 @@ impl Apu {
         let sample_p2 = self.digital_pulse_wave_sample(&self.pulse_wave_chs[1]);
         let sample_t = self.digital_triangle_wave_sample();
         let sample_n = self.digital_noise_sample();
-        let sample_d = self.dmc_ch.load_counter as f32;
+        let sample_d = if self.dmc_ch.enabled {
+            self.dmc_ch.load_counter as f32
+        } else {
+            0.0
+        };
 
-        let mixed_sample = 1.5 * Self::mix_samples(sample_p1, sample_p2, sample_t, sample_n, sample_d);
+        // The sample produced at this stage is purely positive (DC-offset).
+        // Very hard to work with since it will clip as soon as some gain is applied
+        let mixed_sample = Self::mix_samples(sample_p1, sample_p2, sample_t, sample_n, sample_d);
+
+        // The Nes audio chip applies some filters to introduce the simmetry in the waveform
+        // Applying the same filters as the original hardware produces very muffled audio.
+        // I've only kept the 90Hz hpf and ignored the 440Hz hpf.
+        // I also moved the original 14kHz lpf to 21KHz to maintain the original gritt.
+        // They solve the DC-offset problem and make the sound accurate enough.
+
+        // Apply 90Hz HPf (cut off base)
+        let mut filtered = self.hpf90.apply(mixed_sample);
+        // Apply 21KHz Lpf (barely a difference)
+        filtered = self.lpf21k.apply(filtered);
+
+        // Make-up gain
+        filtered *= 2.0;
 
         // Push down to the lockless consumer buffer
-        let _ = self.producer.try_push(mixed_sample);
+        let _ = self.producer.try_push(filtered);
     }
 
     fn mix_samples(pw1: f32, pw2: f32, triangle: f32, noise: f32, dmc: f32) -> f32 {
@@ -269,7 +297,6 @@ impl Apu {
 
         let current_duty = ch.settings.duty as usize;
         if duty_sequences[current_duty][ch.sequence_step] == 1 {
-            // Output volume normalized between 0.0 and 1.0
             (if ch.settings.constant_volume {
                 ch.settings.envelope
             } else {
@@ -297,8 +324,7 @@ impl Apu {
             11, 12, 13, 14, 15,
         ];
 
-        // Return the raw sequence step value (0.0 to 15.0)
-        // The APU mixer will downscale and normalize this automatically later.
+        // Return the raw sequence step value (0 to 15)
         TRIANGLE_SEQUENCE[ch.sequence_step] as f32
     }
 
@@ -331,20 +357,18 @@ impl Apu {
                     ch.timer_countdown -= 1;
                 }
             }
+        }
+        // Noise channel
+        let ch = &mut self.noise_ch;
+        if ch.timer_countdown == 0 {
+            ch.timer_countdown = ch.noise_period + 1;
+            let shift_amount = if ch.noise_mode { 6 } else { 1 };
+            let feedback = (ch.shift_register & 0x1) ^ ((ch.shift_register >> shift_amount) & 0x1);
 
-            // Noise channel
-            let ch = &mut self.noise_ch;
-            if ch.timer_countdown == 0 {
-                ch.timer_countdown = ch.noise_period + 1;
-                let shift_amount = if ch.noise_mode { 6 } else { 1 };
-                let feedback =
-                    (ch.shift_register & 0x1) ^ ((ch.shift_register >> shift_amount) & 0x1);
-
-                ch.shift_register >>= 1;
-                ch.shift_register |= feedback << 14;
-            } else {
-                ch.timer_countdown -= 1;
-            }
+            ch.shift_register >>= 1;
+            ch.shift_register |= feedback << 14;
+        } else {
+            ch.timer_countdown -= 1;
         }
         // Triangle channel
         let ch = &mut self.triangle_ch;
@@ -471,16 +495,20 @@ impl Apu {
         );
     }
 
-    fn dmc_update(&mut self, nes: *mut Nes) -> Result<(), NesError>{
+    fn dmc_update(&mut self, nes: *mut Nes) -> Result<(), NesError> {
         let nes = unsafe { nes.as_mut().unwrap() };
         let ch = &mut self.dmc_ch;
+
+        if !ch.enabled {
+            return Ok(());
+        }
 
         if ch.sample_buffer.is_none() && ch.bytes_remaining > 0 {
             let data = nes.read(ch.current_address)?;
             ch.sample_buffer = Some(data);
             // Stal CPU 4 cycles
             nes.cpu.state.cycles_left += 4;
-            
+
             if ch.current_address == 0xFFFF {
                 ch.current_address = 0x8000;
             } else {
@@ -496,14 +524,14 @@ impl Apu {
                 } else if ch.irq_enable && !ch.irq_signal {
                     // Fire the IRQ edge trigger if loops are disabled
                     ch.irq_signal = true;
-                    self.irq_pending = true; 
+                    self.irq_pending = true;
                 }
             }
         }
 
         if ch.timer_countdown != 0 {
             ch.timer_countdown -= 1;
-            return Ok(())
+            return Ok(());
         }
 
         ch.timer_countdown = ch.timer_reload + 1;
@@ -511,9 +539,13 @@ impl Apu {
             let bit = ch.shift_register & 0x1;
 
             if bit == 1 {
-                if ch.load_counter <= 125 { ch.load_counter += 2; }
+                if ch.load_counter <= 125 {
+                    ch.load_counter += 2;
+                }
             } else {
-                if ch.load_counter >= 2 { ch.load_counter -= 2; }
+                if ch.load_counter >= 2 {
+                    ch.load_counter -= 2;
+                }
             }
         }
 
@@ -532,8 +564,8 @@ impl Apu {
                     ch.silence_flag = true;
                 }
             }
-        } 
-        
+        }
+
         Ok(())
     }
 
@@ -660,7 +692,7 @@ impl Apu {
             3 => {
                 ch.sample_length = (data as u16) << 4 | 1;
             }
-            _ => unreachable!()
+            _ => unreachable!(),
         }
     }
 
@@ -701,10 +733,12 @@ impl Apu {
 
                 if !enable_dmc {
                     self.dmc_ch.bytes_remaining = 0;
-                } else if self.dmc_ch.bytes_remaining == 0{
+                } else if self.dmc_ch.bytes_remaining == 0 {
                     self.dmc_ch.current_address = self.dmc_ch.sample_address;
                     self.dmc_ch.bytes_remaining = self.dmc_ch.sample_length;
                 }
+
+                self.dmc_ch.irq_signal = false;
             }
             0x4017 => {
                 self.sequencer_mode = (data & 0x80) != 0;
@@ -756,6 +790,7 @@ impl Apu {
         ret
     }
 
+    // Expose an IRQ line to the CPU, (Rising edge)
     #[inline(always)]
     pub fn irq_pending(&mut self) -> bool {
         if self.irq_pending {
@@ -763,5 +798,52 @@ impl Apu {
             return true;
         }
         false
+    }
+}
+
+struct HighPassFilter {
+    coeff: f32,
+    prev_sample: f32,
+    prev_input: f32,
+}
+
+impl HighPassFilter {
+    pub fn new(sample_rate: u32, cutoff_freq: f32) -> Self {
+        let delta_time = 1.0 / sample_rate as f32;
+        let rc = 1.0 / (2.0 * f32::consts::PI * cutoff_freq);
+
+        Self {
+            coeff: rc / (rc + delta_time),
+            prev_sample: 0.0,
+            prev_input: 0.0
+        }
+    }
+
+    pub fn apply(&mut self, input: f32) -> f32 {
+        self.prev_sample = self.coeff * (self.prev_sample + input - self.prev_input);
+        self.prev_input = input;
+        self.prev_sample
+    }
+}
+
+struct LowPassFilter {
+    coeff: f32,
+    prev_sample: f32,
+}
+
+impl LowPassFilter {
+    pub fn new(sample_rate: u32, cutoff_freq: f32) -> Self {
+        let delta_time = 1.0 / sample_rate as f32;
+        let rc = 1.0 / (2.0 * f32::consts::PI * cutoff_freq);
+
+        Self {
+            coeff: delta_time / (rc + delta_time),
+            prev_sample: 0.0,
+        }
+    }
+
+    pub fn apply(&mut self, input: f32) -> f32 {
+        self.prev_sample += self.coeff * (input - self.prev_sample);
+        self.prev_sample
     }
 }
