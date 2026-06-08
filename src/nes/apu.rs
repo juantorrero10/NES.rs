@@ -30,7 +30,7 @@ pub struct Apu {
     irq_pending: bool,
 
     hpf90: HighPassFilter,
-    lpf21k: LowPassFilter,
+    lpf19k: LowPassFilter,
 }
 
 #[derive(Default, Clone, Copy)]
@@ -196,7 +196,7 @@ impl Apu {
             irq_pending: false,
 
             hpf90: HighPassFilter::new(sample_rate, 90.0),
-            lpf21k: LowPassFilter::new(sample_rate, 19000.0),
+            lpf19k: LowPassFilter::new(sample_rate, 19000.0),
         }
     }
 
@@ -275,11 +275,7 @@ impl Apu {
         let sample_p2 = self.digital_pulse_wave_sample(&self.pulse_wave_chs[1]);
         let sample_t = self.digital_triangle_wave_sample();
         let sample_n = self.digital_noise_sample();
-        let sample_d = if self.dmc_ch.enabled {
-            self.dmc_ch.load_counter as f32
-        } else {
-            0.0
-        };
+        let sample_d = self.dmc_ch.load_counter as f32;
 
         // The sample produced at this stage is purely positive (DC-offset).
         // Very hard to work with since it will clip as soon as some gain is applied
@@ -294,7 +290,7 @@ impl Apu {
         // Apply 90Hz HPf (cut off base)
         let mut filtered = self.hpf90.apply(mixed_sample);
         // Apply 21KHz Lpf (barely a difference)
-        filtered = self.lpf21k.apply(filtered);
+        filtered = self.lpf19k.apply(filtered);
 
         // Make-up gain
         filtered *= 3.0;
@@ -429,7 +425,7 @@ impl Apu {
             let mute = !(8..=0x7FF).contains(&target_timer);
 
             if mute {
-                ch.timer_reload = 0;
+                ch.length_counter_load = 0;
             }
 
             if ch.sweep.enabled && ch.sweep.shift != 0 && !mute {
@@ -620,6 +616,7 @@ impl Apu {
             }
             3 => {
                 ch.timer_reload = (data as u16 & 0x7) << 8 | ch.timer_reload & 0x00FF;
+                ch.timer_countdown = ch.timer_reload + 1;
                 let len_idx = ((data & !0x7) >> 3) as usize;
                 ch.length_counter_load = LENGTH_LUT[len_idx];
 
@@ -701,12 +698,15 @@ impl Apu {
 
                 ch.timer_reload = DMC_PERIOD_LUT[(data & 0x0F) as usize];
 
+
                 if !ch.irq_enable {
                     ch.irq_signal = false;
                 }
             }
             1 => {
-                ch.load_counter = (data & 0x7f) >> 1;
+                if ch.enabled {
+                    ch.load_counter = data & 0x7f;
+                }
             }
             2 => {
                 ch.sample_address = 0xC000 | (data as u16) << 6;
@@ -850,6 +850,11 @@ impl HighPassFilter {
         self.prev_input = input;
         self.prev_sample
     }
+
+    pub fn reset(&mut self) {
+        self.prev_input = 0.0;
+        self.prev_sample = 0.0;
+    }
 }
 
 struct LowPassFilter {
@@ -871,5 +876,9 @@ impl LowPassFilter {
     pub fn apply(&mut self, input: f32) -> f32 {
         self.prev_sample += self.coeff * (input - self.prev_sample);
         self.prev_sample
+    }
+
+    pub fn reset(&mut self) {
+        self.prev_sample = 0.0;
     }
 }

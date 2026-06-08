@@ -49,14 +49,15 @@ pub fn nes_loop(mut ctx: Box<AppCtx>) -> Result<(), Box<dyn Error>> {
 
     let mut t0 = Instant::now();
 
+    let (screen_ptr, screen_len) = ctx.nes.ppu.get_front_screen();
+    ctx.screen = (screen_ptr, screen_len);
+
     unsafe {
         SetAudioStreamCallback(*ctx.ui.raylib_audio_stream(), Some(nes_audio_callback));
         NES_CTX.store(std::ptr::from_mut(ctx.as_mut()), Ordering::Release);
     }
 
     // It is a pointer+len pair because we can guarantee that this will be valid for ever.
-    let (screen_ptr, screen_len) = ctx.nes.ppu.get_screen();
-
     log::info!("Starting main loop");
 
     while !ctx.ui.raylib_handle().window_should_close() {
@@ -70,7 +71,7 @@ pub fn nes_loop(mut ctx: Box<AppCtx>) -> Result<(), Box<dyn Error>> {
             pfs.mem_edit_page_changed = true;
             frame_has_changed = true;
             ctx.update_info.store(false, Ordering::Release);
-            ctx.ui.update_game_screen(screen_ptr, screen_len);
+            ctx.ui.update_game_screen(ctx.nes.ppu.get_front_screen());
         }
 
         #[cfg(feature = "log")]
@@ -315,6 +316,7 @@ unsafe extern "C" fn nes_audio_callback(buffer: *mut c_void, sample_count: u32) 
         // Update at the exact moment of a new frame to avoid frame tearing
         if ctx.nes.ppu.frame_complete {
             ctx.nes.ppu.frame_complete = false;
+            ctx.nes.ppu.swap_buffers();
             ctx.update_info.store(true, Ordering::Release)
         }
 

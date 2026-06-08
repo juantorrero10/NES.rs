@@ -16,10 +16,9 @@ use simple_logger::SimpleLogger;
 
 use crate::{
     main_loop::AUDIO_BUFFER_SIZE, nes::{Nes, NesError, instruction_set::Instruction6502}, ui::{
-        AppUI, Theme,
-        framestate::{
+        AppUI, ScreenOutput, Theme, framestate::{
             Dissassebly, FrameState, GameScreen, MemEdit, PersistentFrameState, PpuInfo,
-        },
+        }
     }
 };
 
@@ -95,6 +94,7 @@ pub struct AppCtx {
     is_running: AtomicBool,
     update_info: AtomicBool,
     breakpoint: Option<u16>,
+    screen: ScreenOutput
 }
 
 fn load_rom_dialog() -> Option<OsString> {
@@ -147,7 +147,8 @@ fn nes_init() -> Result<Box<AppCtx>, NesError> {
         audio_consumer: rx,
         is_running: AtomicBool::new(false),
         update_info: AtomicBool::new(false),
-        breakpoint: None
+        breakpoint: None,
+        screen: (std::ptr::null(), 0),
     });
     nes_ctx.nes.try_load_save_file(None)?;
     nes_ctx.nes.reset()?;

@@ -133,6 +133,8 @@ impl RaylibInfo {
     }
 }
 
+pub type ScreenOutput = (*const u8, usize);
+
 pub struct Options {
     disassm_focus_pc: bool,
     dissasm_from: u16,
@@ -613,14 +615,14 @@ impl AppUI {
         &mut self.raylib.audio_stream
     }
 
-    pub fn update_game_screen(&mut self, screen_buf: *const u8, length: usize) {
+    pub fn update_game_screen(&mut self, screen: ScreenOutput) {
         unsafe {
             self.raylib
                 .game_texture
                 .texture_mut()
                 .update_texture(std::slice::from_raw_parts(
-                    screen_buf,
-                    length,
+                    screen.0,
+                    screen.1,
                 ))
                 .expect("Couldnt swap buffer");
         }
