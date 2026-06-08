@@ -19,7 +19,7 @@ pub struct Apu {
     sample_rate: u32,
 
     frame_irq_signal: bool,
-    frame_irq_inhibit: bool,
+    frame_irq_disable: bool,
     sequencer_mode: bool,
 
     pulse_wave_chs: [PulseWaveChannel; 2],
@@ -41,7 +41,7 @@ struct PulseWaveChannel {
     timer_countdown: u16,
     length_counter_load: u8,
     settings: PWCSettings,
-    sweep_unit: PWCSweep,
+    sweep: PWCSweep,
     sequence_step: usize,
 
     envelope_start: bool,
@@ -185,7 +185,7 @@ impl Apu {
             frame_counter: 0,
             cycles_per_sample,
             sample_rate,
-            frame_irq_inhibit: false,
+            frame_irq_disable: false,
             frame_irq_signal: false,
             sequencer_mode: false,
             pulse_wave_chs: [PulseWaveChannel::default(); 2],
@@ -196,8 +196,19 @@ impl Apu {
             irq_pending: false,
 
             hpf90: HighPassFilter::new(sample_rate, 90.0),
-            lpf21k: LowPassFilter::new(sample_rate, 21000.0),
+            lpf21k: LowPassFilter::new(sample_rate, 19000.0),
         }
+    }
+
+    pub fn reset(&mut self) {
+        self.pulse_wave_chs = [PulseWaveChannel::default(); 2];
+        self.triangle_ch = TriangleWaveChannel::default();
+        self.noise_ch = NoiseChannel::default();
+        self.dmc_ch = DmcChannel::default();
+
+        self.irq_pending = false;
+        self.frame_irq_signal = false;
+        self.frame_irq_disable = false;
     }
 
     // Runs at 1.79 Mhz
@@ -207,27 +218,46 @@ impl Apu {
         self.sequencer_update();
         self.dmc_update(nes).unwrap();
 
-        if self.total_cycles % 2 == 0 {
-            self.frame_counter += 1;
-            // 4 step
+        self.frame_counter += 1;
+        // 4 step
+        if !self.sequencer_mode {
             match self.frame_counter {
-                3729 | 11186 => {
+                7457 | 22371 => {
                     self.envelope_update();
                     self.linear_counter_update();
                 }
-                7457 | 14916 => {
+                14913 | 29829 => {
                     self.envelope_update();
                     self.linear_counter_update();
                     self.length_counter_update();
                     self.sweep_update();
-                    if self.frame_counter == 14916 {
+                    if self.frame_counter == 29829 {
                         self.frame_counter = 0;
-                        if !self.frame_irq_inhibit && !self.sequencer_mode {
+                        if !self.frame_irq_disable {
+                            // Trigger IRQ on rising edge
                             if !self.frame_irq_signal {
                                 self.frame_irq_signal = true;
                                 self.irq_pending = true;
                             }
                         }
+                    }
+                }
+            _ => {}
+            }
+        } else {
+            match self.frame_counter {
+                7457 | 22371 => {
+                    self.envelope_update();
+                    self.linear_counter_update();
+                },
+                29829 => {}
+                14913 | 37281 => {
+                    self.envelope_update();
+                    self.linear_counter_update();
+                    self.length_counter_update();
+                    self.sweep_update();
+                    if self.frame_counter == 37281 {
+                        self.frame_counter = 0;
                     }
                 }
                 _ => {}
@@ -241,7 +271,6 @@ impl Apu {
 
         self.cycle_accumulator -= self.cycles_per_sample;
 
-        // 3. Sample the outputs from both pulse channels
         let sample_p1 = self.digital_pulse_wave_sample(&self.pulse_wave_chs[0]);
         let sample_p2 = self.digital_pulse_wave_sample(&self.pulse_wave_chs[1]);
         let sample_t = self.digital_triangle_wave_sample();
@@ -268,7 +297,7 @@ impl Apu {
         filtered = self.lpf21k.apply(filtered);
 
         // Make-up gain
-        filtered *= 2.0;
+        filtered *= 3.0;
 
         // Push down to the lockless consumer buffer
         let _ = self.producer.try_push(filtered);
@@ -309,14 +338,6 @@ impl Apu {
 
     fn digital_triangle_wave_sample(&self) -> f32 {
         let ch = &self.triangle_ch;
-
-        if !ch.enabled
-            || ch.timer_reload < 2
-            || ch.length_counter_load == 0
-            || ch.linear_counter_value == 0
-        {
-            return 0.0;
-        }
 
         // Fixed hardcoded 32-step triangle waveform sequencer steps
         const TRIANGLE_SEQUENCE: [u8; 32] = [
@@ -388,32 +409,33 @@ impl Apu {
         for i in 0..2 {
             let ch = &mut self.pulse_wave_chs[i];
 
-            if ch.sweep_unit.countdown != 0 {
-                ch.sweep_unit.countdown -= 1;
-                continue;
-            }
-            ch.sweep_unit.countdown = ch.sweep_unit.period + 1;
-
-            if !ch.sweep_unit.enabled || ch.sweep_unit.shift == 0 {
+            if ch.sweep.countdown != 0 {
+                ch.sweep.countdown -= 1;
                 continue;
             }
 
-            let delta = (ch.timer_reload >> ch.sweep_unit.shift) as i32;
+            ch.sweep.countdown = ch.sweep.period + 1;
+
+
+            let delta = (ch.timer_reload >> ch.sweep.shift) as i32;
 
             // Promote the integers to prevent wrap around
-            let target_timer: i32 = if ch.sweep_unit.negative {
+            let target_timer: i32 = if ch.sweep.negative {
                 ch.timer_reload as i32 - delta - if i == 0 { 1 } else { 0 }
             } else {
                 ch.timer_reload as i32 + delta
             };
 
-            //dbg!(ch.timer_reload, delta, target_timer, ch.sweep_unit.shift);
+            let mute = !(8..=0x7FF).contains(&target_timer);
 
-            if !(8..=0x7FF).contains(&target_timer) {
-                ch.length_counter_load = 0;
-            } else {
+            if mute {
+                ch.timer_reload = 0;
+            }
+
+            if ch.sweep.enabled && ch.sweep.shift != 0 && !mute {
                 ch.timer_reload = target_timer as u16;
             }
+            //dbg!(ch.timer_reload, delta, target_timer, ch.sweep_unit.shift);
         }
     }
 
@@ -585,12 +607,12 @@ impl Apu {
             }
             1 => {
                 let p = (data & 0x70) >> 4;
-                ch.sweep_unit = PWCSweep {
+                ch.sweep = PWCSweep {
                     enabled: data & 0x80 != 0,
                     negative: data & 0x08 != 0,
                     period: p,
                     shift: data & 0x7,
-                    countdown: p + 1,
+                    countdown: 0,
                 }
             }
             2 => {
@@ -603,7 +625,7 @@ impl Apu {
 
                 ch.sequence_step = 0;
 
-                ch.sweep_unit.countdown = ch.sweep_unit.period + 1;
+                ch.sweep.countdown = ch.sweep.period + 1;
 
                 // Reset envelope
                 ch.envelope_start = true;
@@ -742,10 +764,14 @@ impl Apu {
             }
             0x4017 => {
                 self.sequencer_mode = (data & 0x80) != 0;
+                self.frame_counter = 0;
                 if self.sequencer_mode {
                     self.length_counter_update();
+                    self.envelope_update();
+                    self.linear_counter_update();
+                    self.sweep_update();
                 }
-                self.frame_irq_inhibit = (data & 0x40) != 0;
+                self.frame_irq_disable = (data & 0x40) != 0;
             }
             _ => {}
         }

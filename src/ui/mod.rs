@@ -7,7 +7,7 @@ use raylib::{
 };
 use raylib_imgui_rs::Renderer;
 
-use crate::{main_loop::{AUDIO_BUFFER_SIZE, EMU_SAMPLE_RATE}, nes::cpu::Flag6502, ui::framestate::FrameState};
+use crate::{load_rom_dialog, load_sram_dialog, main_loop::{AUDIO_BUFFER_SIZE, EMU_SAMPLE_RATE}, nes::cpu::Flag6502, ui::framestate::{FileAction, FrameState}};
 
 pub mod framestate;
 mod window_dissasm;
@@ -336,18 +336,34 @@ impl AppUI {
         if let Some(_menu_bar) = ui.begin_main_menu_bar() {
         // 2. The "File" Dropdown (Save States, Loading, Exiting)
             if let Some(_menu_file) = ui.begin_menu("File") {
-                if ui.menu_item("Load ROM...") {
-                    // TODO: Trigger your file dialog open logic
+                if ui.menu_item("Switch ROM...") {
+                    match load_rom_dialog() {
+                        Some(path) => st.file_action = FileAction::LoadROM(path),
+                        None => st.file_action = FileAction::None,
+                    }
                 }
                 
                 ui.separator(); // Draws a nice clean dividing line
 
                 // Save State Sub-items
-                if ui.menu_item_config("Save State").shortcut("Ctrl+S").build() {
-                   st.save_signal = true;
+                if ui.menu_item_config("Save game progress").shortcut("Ctrl+S").build() {
+                   st.file_action = FileAction::StoreSRAM
                 }
-                if ui.menu_item_config("Load State").shortcut("Ctrl+L").build() {
-                    // TODO: Deserialize your saved state file back into memory
+                if ui.menu_item_config("Load game progress").shortcut("Ctrl+O").build() {
+                   match load_sram_dialog() {
+                        Some(path) => st.file_action = FileAction::LoadSRAM(path),
+                        None => st.file_action = FileAction::None,
+                    }
+                }
+
+                ui.separator();
+
+                if ui.menu_item_config("Capture emulator state").shortcut("Ctrl+Shift+S").build() {
+                   
+                }
+
+                if ui.menu_item_config("Load emulator capture.").shortcut("Ctrl+Shift+O").build() {
+                   
                 }
 
                 ui.separator();

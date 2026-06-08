@@ -6,6 +6,8 @@ use std::{
 use raylib::ffi::SetAudioStreamCallback;
 use ringbuf::traits::Consumer;
 
+use crate::ui::framestate::FileAction;
+
 use super::*;
 
 static NES_CTX: AtomicPtr<AppCtx> = AtomicPtr::new(std::ptr::null_mut());
@@ -115,8 +117,7 @@ pub fn nes_loop(mut ctx: Box<AppCtx>) -> Result<(), Box<dyn Error>> {
 
         let mut fs = FrameState {
             dev_mode,
-            save_signal: false,
-            load_signal: false,
+            file_action: FileAction::None,
             screen: GameScreen {
                 update: new_frame_generated,
                 video_output: (screen_ptr, screen_len),
@@ -134,10 +135,6 @@ pub fn nes_loop(mut ctx: Box<AppCtx>) -> Result<(), Box<dyn Error>> {
                 text: &dissasembly,
                 mapping: &ins_mapping,
                 bkpt,
-            },
-            // Uploading the daat every frame
-            game_audio: Apu {
-                // data: audio.as_slice(),
             },
             ppu_info: PpuInfo {
                 chr_bank_0: chr_bank_0_canvas.as_slice(),
@@ -197,6 +194,14 @@ pub fn nes_loop(mut ctx: Box<AppCtx>) -> Result<(), Box<dyn Error>> {
             if let Some((a, v)) = fs.memory_editor.modify_byte {
                 ctx.nes.write(a, v)?;
             }
+
+            match &fs.file_action {
+                FileAction::LoadROM(path) => { ctx.nes.swap_rom(path)?; ctx.nes.reset()?; },
+                FileAction::LoadSRAM(path) => { ctx.nes.try_load_save_file(Some(path))?; },
+                FileAction::StoreSRAM => { ctx.nes.try_store_save_file(None)?; }
+                _ => {}
+            }
+
             pfs = PersistentFrameState::save_persistent_info(fs);
         } else {
             std::thread::yield_now();
@@ -208,6 +213,9 @@ pub fn nes_loop(mut ctx: Box<AppCtx>) -> Result<(), Box<dyn Error>> {
         frame_has_changed = false;
         new_frame_generated = false;
     }
+
+    ctx.nes.try_store_save_file(None)?;
+    ctx.nes.save_cpu()?;
     Ok(())
 }
 

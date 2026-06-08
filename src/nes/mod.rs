@@ -1,9 +1,22 @@
-use std::{cell::RefCell, error::Error, ffi::OsString, fs, io::{Read, Write}, rc::Rc, thread, time::Duration};
+use std::{
+    cell::RefCell, env, error::Error, ffi::{OsStr, OsString}, fs, io::{Read, Write}, path::{Path, PathBuf}, rc::Rc, thread, time::Duration
+};
 use thiserror::Error;
 
-use crate::{AudioProducer, main_loop::EMU_SAMPLE_RATE, nes::{
-    NesEvent::InfoReq, apu::Apu, bus_cpu::{BusCpu, BusCpuError, IOResult}, controller::Controller, cpu::{Cpu, CpuError}, game_rom::ROMErr, mapper_base::Mapper, ppu::{BusPpu, BusPpuChips, Ppu, PpuError, PpuRegister, ppu_flags::STATUS_VBLANK}
-}};
+use crate::{
+    AudioProducer,
+    main_loop::EMU_SAMPLE_RATE,
+    nes::{
+        NesEvent::InfoReq,
+        apu::Apu,
+        bus_cpu::{BusCpu, BusCpuError, IOResult},
+        controller::Controller,
+        cpu::{Cpu, CpuError},
+        game_rom::ROMErr,
+        mappers::Mapper,
+        ppu::{BusPpu, BusPpuChips, Ppu, PpuError, PpuRegister, ppu_flags::STATUS_VBLANK},
+    },
+};
 
 mod apu;
 pub mod bus_cpu;
@@ -11,7 +24,6 @@ pub mod controller;
 pub mod cpu;
 mod game_rom;
 pub mod instruction_set;
-mod mapper_base;
 mod ppu;
 
 mod mappers;
@@ -26,6 +38,7 @@ pub struct Nes {
     pub mapper: Box<dyn Mapper>,
     oam_dma_buffer: [u8; 256],
     ppu_cpu_clock_frequency: u8,
+    save_file_path: OsString,
 
     #[cfg(feature = "log")]
     log: bool,
@@ -41,19 +54,25 @@ pub enum NesError {
     EventError(#[from] Box<dyn Error>),
     #[error("Couldn't respond to '{0:?}' event")]
     UnhandledEvent(NesEvent),
+    #[error("Error ocurred on IO operaation: {0}")]
+    IOError(#[from] std::io::Error),
+    #[error("'{0:?}' is not a valid path")]
+    InvalidPath(OsString),
+    #[error("Couldnt serialize/capture the emulator: {0}")]
+    BinarySerializingError(#[from] postcard::Error)
 }
 
 type Result<T> = std::result::Result<T, NesError>;
 
 impl Nes {
-    pub fn new(game_file_path: OsString, audio_producer: AudioProducer) -> Result<Self> {
+    pub fn new(game_file_path: &OsString, audio_producer: AudioProducer) -> Result<Self> {
         let mapper = game_rom::load_rom(game_file_path)?;
         let cpu = Cpu::new();
         let bus_cpu = BusCpu::new();
         let ppu = Ppu::new();
         let apu = Apu::new(audio_producer, EMU_SAMPLE_RATE);
         let controller = Controller::default();
-        let bus_ppu = BusPpu::new();
+        let bus_ppu = BusPpu::new();        
 
         Ok(Nes {
             bus_cpu,
@@ -65,9 +84,95 @@ impl Nes {
             mapper,
             oam_dma_buffer: [0u8; 256],
             ppu_cpu_clock_frequency: 0,
+            save_file_path: Self::default_save_file_name(game_file_path)?,
             #[cfg(feature = "log")]
             log: false,
         })
+    }
+
+    #[inline]
+    pub fn default_save_file_name(game_file_path: &OsString) -> Result<OsString> {
+        // Ex: C:\\Users\\xxx\\smb.rom -> {CWD}\\savefiles\\smb.rom.sram
+        let file_name = Path::new(game_file_path)
+            .file_name()
+            .ok_or_else(|| NesError::InvalidPath(game_file_path.clone()))?;
+
+        let mut save_path = env::current_dir()?;
+        save_path.push("savefiles");
+
+        if !save_path.exists() {
+            std::fs::create_dir_all(&save_path)?;
+        }
+
+        save_path.push(file_name);
+        let mut save_path = save_path.into_os_string();
+        save_path.push(".sram");
+        Ok(save_path)
+    }
+
+    pub fn swap_rom(&mut self, game_file_path: &OsString) -> Result<()> {
+        // Save progress.
+        self.try_store_save_file(None)?;
+
+        let new_mapper = game_rom::load_rom(game_file_path)?;
+        self.mapper = new_mapper;
+
+        // Try load new game's data.
+        let new_save_file_path = Self::default_save_file_name(game_file_path)?;
+        self.try_load_save_file(Some(&new_save_file_path))?;
+        Ok(())
+    }
+
+    pub fn try_load_save_file(&mut self, path: Option<&OsString>) -> Result<()> {
+        let path = match path {
+            Some(s) => s,
+            None => &self.save_file_path
+        };
+
+        if !self.mapper.is_sram_battery_backed() {
+            log::info!("Game does not support saving.");
+            return Ok(());
+        }
+        let mut save_file = match std::fs::File::open(path) {
+            Ok(s) => s,
+            Err(e) => {
+                log::warn!("Couldn't load save file: {e}");
+                return Ok(());
+            }
+        };
+
+        let mut file_contents: Vec<u8> = Vec::new();
+        save_file.read_to_end(&mut file_contents)?;
+        self.mapper.load_sram(&file_contents);
+
+        // Change the save file path
+        log::info!("Loaded save file: {:?}", path);
+        self.save_file_path = path.clone();
+        Ok(())
+    }
+
+    pub fn try_store_save_file(&mut self, path: Option<&OsString>) -> Result<()> {
+        let path = match path {
+            Some(s) => s,
+            None => &self.save_file_path
+        };
+
+        if !self.mapper.is_sram_battery_backed() {
+            log::warn!("Cannot save since game does not support saving.");
+            println!("   >   You can use 'File > Capture emulator state' to save your progress although saving this way is considerably heavier.");
+            return Ok(());
+        }
+
+        let sram = match self.mapper.save_sram() {
+            Some(s) => s,
+            None => return Ok(()),
+        };
+
+        let mut save_file = std::fs::File::create(path)?;
+        save_file.write(sram)?;
+
+        log::info!("Saved progress to {:?}", path);
+        Ok(())
     }
 
     #[cfg(feature = "log")]
@@ -80,10 +185,22 @@ impl Nes {
         log::info!("PPU SC: {}, CYC: {}", self.ppu.scanline, self.ppu.cycle);
     }
 
+    pub fn save_cpu(&self) -> Result<()> {
+        let mut f = fs::File::create("cpu.sav")?;
+        let mut cpu_bin = Vec::with_capacity(size_of::<Cpu>());
+        unsafe {
+            cpu_bin.set_len(size_of::<Cpu>());
+        }
+        postcard::to_slice(&self.cpu, &mut cpu_bin)?;
+        f.write(&cpu_bin)?;
+        Ok(())
+    }
+
     pub fn reset(&mut self) -> Result<()> {
         let instance = std::ptr::from_mut(self);
         self.cpu.reset(instance);
         self.ppu.reset();
+        self.apu.reset();
         Ok(())
     }
 
@@ -189,7 +306,11 @@ impl Nes {
         #[cfg(feature = "log")]
         {
             if self.log && self.mapper.is_irq_pending() {
-                log::info!("IRQ Is pending: SC: {}, CYC: {}", self.ppu.scanline, self.ppu.cycle);
+                log::info!(
+                    "IRQ Is pending: SC: {}, CYC: {}",
+                    self.ppu.scanline,
+                    self.ppu.cycle
+                );
             }
         }
 
@@ -198,7 +319,7 @@ impl Nes {
             self.cpu.nmi(instance);
             self.ppu.nmi_signal = false;
         }
-        
+
         self.apu.clock(instance);
         if self.apu.irq_pending() {
             self.cpu.irq(instance);
@@ -208,10 +329,9 @@ impl Nes {
         Ok(())
     }
 
-
     pub fn step_frame(&mut self, break_point: Option<u16>) -> Result<bool> {
         // let _span = tracy_client::span!("Step frame");
-            loop {
+        loop {
             self.clock(None)?;
             if let Some(a) = break_point
                 && a == self.cpu.get_pc()
@@ -263,17 +383,16 @@ pub enum NesEvent {
     ControllerWrittenTo(u8),
     ApuWrittenTo(u16, u8),
     ApuReadFrom(u16),
-    InfoReq(MapperInfoReq)
+    InfoReq(MapperInfoReq),
 }
 
 #[derive(Debug)]
 pub enum MapperInfoReq {
-    PpuAddressBus
+    PpuAddressBus,
 }
 
 // Event logic
 impl Nes {
-
     #[allow(unreachable_patterns)]
     pub fn trigger_event(
         &mut self,
@@ -288,22 +407,21 @@ impl Nes {
             NesEvent::ApuWrittenTo(addr, data) => {
                 self.apu.event_cpu_has_written(addr, data);
                 Ok(None)
-            },
-            NesEvent::ControllerWrittenTo(data) => { 
+            }
+            NesEvent::ControllerWrittenTo(data) => {
                 self.controller.event_cpu_has_written(data);
                 Ok(None)
-            },
+            }
             NesEvent::OAMDMATransfer(addr_start) => {
                 let page = (addr_start as u16) << 8;
                 for i in 0..256 {
                     self.oam_dma_buffer[i] = self.read(page + i as u16)?;
                 }
-                self
-                    .ppu
+                self.ppu
                     .event_oam_dma_transfer(self.oam_dma_buffer.as_slice())?;
                 Ok(None)
             }
-            NesEvent::InfoReq(i) =>{
+            NesEvent::InfoReq(i) => {
                 match i {
                     MapperInfoReq::PpuAddressBus => {
                         // log::info!("Info request: \n\tPrev: {:014b}\n\tCurr: {:014b}", self.bus_ppu.prev_address_bus, self.bus_ppu.address_bus);
@@ -314,10 +432,11 @@ impl Nes {
                 Ok(None)
             }
             NesEvent::PpuRegReadFrom(r) => Ok(Some(self.ppu.event_cpu_has_read(r, instance)?)),
-            NesEvent::ControllerReadFrom(addr) => Ok(Some(self.controller.event_cpu_has_read(addr))),
+            NesEvent::ControllerReadFrom(addr) => {
+                Ok(Some(self.controller.event_cpu_has_read(addr)))
+            }
             NesEvent::ApuReadFrom(addr) => Ok(Some(self.apu.event_cpu_has_read(addr))),
             _ => Err(Box::new(NesError::UnhandledEvent(e))),
         }
     }
 }
-

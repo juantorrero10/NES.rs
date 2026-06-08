@@ -6,7 +6,7 @@ use crate::nes::{
     Nes,
     bus_cpu::BusCpuError,
     game_rom::MemoryMirroring,
-    mapper_base::Mapper,
+    mappers::Mapper,
     ppu::{
         self,
         BusPpuTarget::{Memory, OpenBus},

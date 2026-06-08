@@ -48,11 +48,11 @@ use thiserror::Error;
 
 use crate::nes::{
     game_rom::ROMErr::MapperNotImplemented,
-    mapper_base::Mapper, mappers::{mmc0::MMC0, mmc3::MMC3},
+    mappers::Mapper, mappers::{mmc0::MMC0, mmc3::MMC3},
 };
 
-pub fn load_rom(filepath: OsString) -> Result<Box<dyn Mapper>> {
-    let mut f = File::open(&filepath)?;
+pub fn load_rom(filepath: &OsString) -> Result<Box<dyn Mapper>> {
+    let mut f = File::open(filepath)?;
     let mut header = [0u8; size_of::<NesGameHeader>()];
     f.read(header.as_mut_slice())?;
     let header: NesGameHeader = unsafe { mem::transmute(header) };
@@ -93,6 +93,7 @@ pub fn load_rom(filepath: OsString) -> Result<Box<dyn Mapper>> {
         prg_data,
         chr_data,
         mirror,
+        header.flag6 & 0x02 != 0
     )?)
 }
 
@@ -103,6 +104,7 @@ fn create_mapper(
     prg_rom: Vec<u8>,
     chr_rom: Vec<u8>,
     mirroring: MemoryMirroring,
+    battery_backed: bool
 ) -> Result<Box<dyn Mapper>> {
     match mapper_id {
         0 => Ok(Box::new(MMC0::new(
@@ -115,7 +117,8 @@ fn create_mapper(
             prg_rom,
             prg_ram_size,
             chr_rom,
-            mirroring
+            mirroring,
+            battery_backed
         ))),
         _ => Err(MapperNotImplemented(mapper_id)),
     }

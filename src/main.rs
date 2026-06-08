@@ -6,20 +6,19 @@
 //static GLOBAL: ProfiledAllocator<std::alloc::System> = ProfiledAllocator::new(std::alloc::System, 0);
 
 use std::{
-    collections::HashMap, error::Error, ffi::OsString, fmt::Write, sync::{Arc, atomic::AtomicBool}, thread::sleep, time::{Duration, Instant}
+    collections::HashMap, error::Error, ffi::OsString, fmt::Write, sync::{Arc, atomic::AtomicBool}, time::{Instant}
 };
 
 use colored::Colorize;
-use log::info;
 use raylib::ffi::KeyboardKey;
 use ringbuf::{SharedRb, storage::Heap, traits::Split, wrap::caching::Caching};
 use simple_logger::SimpleLogger;
 
 use crate::{
-    main_loop::AUDIO_BUFFER_SIZE, nes::{Nes, NesError, bus_cpu::BusCpu, instruction_set::Instruction6502}, ui::{
+    main_loop::AUDIO_BUFFER_SIZE, nes::{Nes, NesError, instruction_set::Instruction6502}, ui::{
         AppUI, Theme,
         framestate::{
-            Apu, Dissassebly, FrameState, GameScreen, MemEdit, PersistentFrameState, PpuInfo,
+            Dissassebly, FrameState, GameScreen, MemEdit, PersistentFrameState, PpuInfo,
         },
     }
 };
@@ -98,6 +97,33 @@ pub struct AppCtx {
     breakpoint: Option<u16>,
 }
 
+fn load_rom_dialog() -> Option<OsString> {
+    let file = rfd::FileDialog::new()
+        .add_filter("NES ROM", &["nes", "rom"])
+        .add_filter("any file", &["*"])
+        .pick_file();
+    match file {
+        Some(p) => Some(p.as_os_str().to_owned()),
+        None => {
+            None
+        }
+    }
+}
+
+fn load_sram_dialog() -> Option<OsString> {
+    let file = rfd::FileDialog::new()
+        .add_filter("NES Game SRAM Snapshot", &["sram"])
+        .add_filter("any file", &["*"])
+        .set_directory("savefiles")
+        .pick_file();
+    match file {
+        Some(p) => Some(p.as_os_str().to_owned()),
+        None => {
+            None
+        }
+    }
+}
+
 
 
 fn nes_init() -> Result<Box<AppCtx>, NesError> {
@@ -107,15 +133,9 @@ fn nes_init() -> Result<Box<AppCtx>, NesError> {
     let rom_path = match args.next() {
         Some(f) => OsString::from(&f),
         _ => {
-            let file = rfd::FileDialog::new()
-                .add_filter("NES ROM", &["nes", "rom"])
-                .add_filter("any file", &["*"])
-                .pick_file();
-            match file {
-                Some(p) => p.as_os_str().to_owned(),
-                None => {
-                    panic!("a");
-                }
+            match load_rom_dialog() {
+                Some(s) => s,
+                None => std::process::exit(1),
             }
         }
     };
@@ -123,12 +143,13 @@ fn nes_init() -> Result<Box<AppCtx>, NesError> {
     let (tx, rx) = audio.split();
     let mut nes_ctx = Box::new(AppCtx {
         ui: app_init(),
-        nes: Nes::new(rom_path, tx)?,
+        nes: Nes::new(&rom_path, tx)?,
         audio_consumer: rx,
         is_running: AtomicBool::new(false),
         update_info: AtomicBool::new(false),
         breakpoint: None
     });
+    nes_ctx.nes.try_load_save_file(None)?;
     nes_ctx.nes.reset()?;
     Ok(nes_ctx)
 }
@@ -163,7 +184,6 @@ fn app_init() -> AppUI {
 }
 
 fn main() {
-    dbg!(size_of::<Nes>());
     SimpleLogger::new()
         .with_level(log::LevelFilter::Info)
         .with_timestamp_format(time::macros::format_description!(

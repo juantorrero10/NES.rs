@@ -20,6 +20,8 @@ pub struct MMC3 {
     prg_ram_enable: bool,
     prg_ram_allow_write: bool,
 
+    prg_ram_battery_backed: bool,
+
     registers: [usize; 8],
 
     prg_offsets: [usize; 4], // Offsets for the four 8KB PRG windows
@@ -49,6 +51,7 @@ impl MMC3 {
         mut prg_ram_size: usize,
         chr_rom: Vec<u8>,
         mirroring: MemoryMirroring,
+        battery_backed: bool,
     ) -> Self {
         if prg_ram_size == 0 {
             prg_ram_size = 8192;
@@ -68,6 +71,7 @@ impl MMC3 {
 
             prg_ram_enable: true,
             prg_ram_allow_write: true,
+            prg_ram_battery_backed: battery_backed,
 
             last_ppu_addr: 0,
             a12_filter: 3,
@@ -231,7 +235,6 @@ impl Mapper for MMC3 {
 
         self.last_ppu_addr = addr;
 
-
         if !old_a12 && new_a12 && self.a12_filter == 3 {
             if self.irq_reload {
                 self.irq_counter = self.irq_latch;
@@ -276,10 +279,7 @@ impl Mapper for MMC3 {
                     );
                 }
             }
-            
-            
         }
-        
 
         addr < 0x2000
     }
@@ -305,6 +305,27 @@ impl Mapper for MMC3 {
     fn on_cpu_clock(&mut self) -> Option<NesEvent> {
         // Request PPU address bus
         Some(NesEvent::InfoReq(MapperInfoReq::PpuAddressBus))
+    }
+
+    fn is_sram_battery_backed(&self) -> bool {
+        self.prg_ram_battery_backed
+    }
+
+    fn load_sram(&mut self, buff: &[u8]) {
+        if self.prg_ram.len() != buff.len() {
+            log::error!(
+                "Tried to load sram to mapper but sizes doesnt match: len(prg_ram): {} != len(file_buff): {}.",
+                self.prg_ram.len(),
+                buff.len()
+            );
+            return;
+        }
+
+        self.prg_ram.copy_from_slice(buff);
+    }
+
+    fn save_sram(&self) -> Option<&[u8]> {
+        Some(&self.prg_ram)
     }
 
     #[allow(unused)]

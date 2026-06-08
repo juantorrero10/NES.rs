@@ -2,9 +2,10 @@ use std::error::Error;
 use std::fmt::{Debug, Write};
 
 use colored::Colorize;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::nes::mapper_base::Mapper;
+use crate::nes::mappers::Mapper;
 use crate::nes::{Nes, NesError};
 use crate::nes::bus_cpu::{BusCpu, BusCpuError};
 use crate::nes::instruction_set::{
@@ -19,7 +20,7 @@ const RESET_VEC: u16 = 0xFFFC;
 const IRQ_VEC: u16 = 0xFFFE;
 const NMI_VEC: u16 = 0xFFFA;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Serialize, Deserialize)]
 pub struct RegFile6502 {
     pub a: u8,
     pub x: u8,
@@ -87,7 +88,7 @@ impl Flag6502 {
 }
 
 // Addtiional state that the CPU works with but they are not part of the official "Registers"
-#[derive(Default)]
+#[derive(Default, Deserialize, Serialize)]
 pub struct State6502 {
     pub addr_abs: u16,
     pub addr_rel: i16,
@@ -97,6 +98,7 @@ pub struct State6502 {
     pub clock_counter: u64,
 }
 
+#[derive(Serialize, Deserialize)]
 pub struct Cpu {
     pub registers: RegFile6502,
     pub state: State6502,

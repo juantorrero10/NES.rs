@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, ffi::OsString};
 
 use crate::nes::cpu::RegFile6502;
 
@@ -9,14 +9,16 @@ pub struct FrameState<'a> {
     pub dissasembly: Dissassebly<'a>,
     pub memory_editor: MemEdit<'a>,
     pub ppu_info: PpuInfo<'a>,
-    pub game_audio: Apu,
-    pub save_signal: bool,
-    pub load_signal: bool,
+    pub file_action: FileAction
 }
 
-pub struct Apu {
-    // pub data: &'a [f32]
+pub enum FileAction {
+    None,
+    LoadROM(OsString),
+    LoadSRAM(OsString),
+    StoreSRAM
 }
+
 
 pub struct PpuInfo<'a> {
     pub chr_bank_0: &'a [u8],

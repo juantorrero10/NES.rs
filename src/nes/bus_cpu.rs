@@ -2,7 +2,7 @@ use std::{error::Error};
 
 use thiserror::Error;
 
-use crate::nes::{NesEvent, bus_cpu::IOResult::{OkRead, OkWrite, TriggerEvent}, mapper_base::Mapper, ppu::PpuRegister};
+use crate::nes::{NesEvent, bus_cpu::IOResult::{OkRead, OkWrite, TriggerEvent}, mappers::Mapper, ppu::PpuRegister};
 
 // RAM Constants
 const ADDR_RAM_START: u16 = 0x0000;
