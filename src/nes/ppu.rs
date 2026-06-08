@@ -2,7 +2,7 @@ use std::{fmt::Write, time::Instant};
 
 use thiserror::Error;
 
-use crate::nes::{
+use crate::{nes::{
     Nes,
     bus_cpu::BusCpuError,
     game_rom::MemoryMirroring,
@@ -11,7 +11,7 @@ use crate::nes::{
         self,
         BusPpuTarget::{Memory, OpenBus},
     },
-};
+}, ui::ScreenOutput};
 
 #[allow(unused)]
 pub const ADDR_CHR_START: u16 = 0x0000;
@@ -181,7 +181,10 @@ pub struct Ppu {
     total: Instant,
     n_frames: f64,
 
-    screen_data: [u8; SCREEN_SIZE],
+    screen_data_buffer0: Vec<u8>,
+    screen_data_buffer1: Vec<u8>,
+
+    current_buffer_selected: bool,
 
     ctrl: u8,
     status: u8,
@@ -753,8 +756,11 @@ impl Ppu {
             return;
         }
         let offset = 4 * (y * SCREEN_WIDTH + x);
-        self.screen_data[offset..(offset + 3)].copy_from_slice(&data);
-        self.screen_data[offset + 3] = 255;
+
+        let screen = self.back_screen();
+
+        screen[offset..(offset + 3)].copy_from_slice(&data);
+        screen[offset + 3] = 255;
     }
 }
 
@@ -919,7 +925,9 @@ impl PpuRegister {
 impl Ppu {
     pub fn new() -> Self {
         Ppu {
-            screen_data: [0u8; SCREEN_SIZE],
+            screen_data_buffer0: vec![0u8; SCREEN_SIZE],
+            screen_data_buffer1: vec![0u8; SCREEN_SIZE],
+            current_buffer_selected: false,
             oam: OAM {
                 mem: [OAttribute::default(); 64],
                 addr: 0,
@@ -962,7 +970,24 @@ impl Ppu {
 
         self.oam.addr;
 
-        self.screen_data.fill(0);
+        self.screen_data_buffer0.fill(0);
+        self.screen_data_buffer1.fill(0);
+    }
+
+    #[inline(always)]
+    fn front_screen(&mut self) -> &mut [u8] {
+        match self.current_buffer_selected {
+            false => self.screen_data_buffer0.as_mut_slice(),
+            true => self.screen_data_buffer1.as_mut_slice(),
+        }
+    }
+
+    #[inline(always)]
+    fn back_screen(&mut self) -> &mut [u8] {
+        match self.current_buffer_selected {
+            false => self.screen_data_buffer1.as_mut_slice(),
+            true => self.screen_data_buffer0.as_mut_slice(),
+        }
     }
 
     pub fn toggle_log(&mut self) {
@@ -1108,8 +1133,14 @@ impl Ppu {
     }
 
     #[inline(always)]
-    pub fn get_screen(&self) -> (*const u8, usize) {
-        (self.screen_data.as_ptr(), self.screen_data.len())
+    pub fn swap_buffers(&mut self) {
+        self.current_buffer_selected ^= true;
+    }
+
+    #[inline(always)]
+    pub fn get_front_screen(&mut self) -> ScreenOutput {
+        let sc = self.front_screen();
+        (sc.as_ptr(), sc.len())
     }
 
     #[inline(always)]
