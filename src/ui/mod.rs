@@ -7,7 +7,7 @@ use raylib::{
 };
 use raylib_imgui_rs::Renderer;
 
-use crate::{load_rom_dialog, load_sram_dialog, main_loop::{AUDIO_BUFFER_SIZE, EMU_SAMPLE_RATE}, nes::cpu::Flag6502, ui::framestate::{FileAction, FrameState}};
+use crate::{load_emu_snapshot_dialog, load_rom_dialog, load_sram_dialog, main_loop::{AUDIO_BUFFER_SIZE, EMU_SAMPLE_RATE}, nes::cpu::Flag6502, store_emu_snapshot_dialog, ui::framestate::{FileAction, FrameState}};
 
 pub mod framestate;
 mod window_dissasm;
@@ -352,7 +352,7 @@ impl AppUI {
                    st.file_action = FileAction::StoreSRAM
                 }
                 if ui.menu_item_config("Load game progress").shortcut("Ctrl+O").build() {
-                   match load_sram_dialog() {
+                    match load_sram_dialog() {
                         Some(path) => st.file_action = FileAction::LoadSRAM(path),
                         None => st.file_action = FileAction::None,
                     }
@@ -361,11 +361,17 @@ impl AppUI {
                 ui.separator();
 
                 if ui.menu_item_config("Capture emulator state").shortcut("Ctrl+Shift+S").build() {
-                   
+                    match store_emu_snapshot_dialog() {
+                        Some(path) => st.file_action = FileAction::TakeSnapshot(path),
+                        None => st.file_action = FileAction::None,
+                    }
                 }
 
                 if ui.menu_item_config("Load emulator capture.").shortcut("Ctrl+Shift+O").build() {
-                   
+                    match load_emu_snapshot_dialog() {
+                        Some(path) => st.file_action = FileAction::LoadSnapshot(path),
+                        None => st.file_action = FileAction::None,
+                    }
                 }
 
                 ui.separator();
@@ -419,13 +425,8 @@ impl AppUI {
             .position(dims.position_game_win(), imgui::Condition::Always)
             .size(dims.size_game_win(), imgui::Condition::Always)
             .build(|| {
-                let video_out = unsafe {std::slice::from_raw_parts(
-                        st.screen.video_output.0,
-                        st.screen.video_output.1,
-                )};
 
-                let has_generated_a_frame = video_out[..4] != [0, 0, 0, 0];
-                if !has_generated_a_frame {
+                if st.show_press_start_msg {
                     let text = "Press TAB to start the game.";
                     ui.set_window_font_scale(1.50);
                     let text_width = ui.calc_text_size(text)[0];

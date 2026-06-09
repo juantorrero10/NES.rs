@@ -1,5 +1,3 @@
-use std::ffi::OsString;
-
 use crate::nes::{
     bus_cpu::{BusCpuChips, BusCpuTarget},
     game_rom::MemoryMirroring,
@@ -11,7 +9,7 @@ pub mod mmc3;
 
 use crate::nes::{MapperInfoReq, NesEvent};
 
-pub trait Mapper {
+pub trait Mapper{
     fn cpu_need_intercept(&mut self, addr: u16) -> bool;
 
     fn cpu_intercept<'a>(
@@ -59,6 +57,10 @@ pub trait Mapper {
     fn load_sram(&mut self, _buff: &[u8]) {}
 
     fn save_sram(&self) -> Option<&[u8]> { None }
+
+    fn get_snapshot_size(&self) -> usize;
+
+    fn take_snapshot(&self, buff: &mut [u8]) -> Result<(), postcard::Error>;
 
     #[cfg(feature = "log")]
     fn toggle_log(&mut self) {}

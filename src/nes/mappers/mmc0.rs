@@ -1,3 +1,5 @@
+use serde::{Deserialize, Serialize};
+
 use super::*;
 
 macro_rules! rom {
@@ -18,7 +20,7 @@ macro_rules! ppu_rom {
     };
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct MMC0 {
     prg_ram: Vec<u8>,
     prg_rom: Vec<u8>,
@@ -87,5 +89,15 @@ impl Mapper for MMC0 {
 
     fn mirroring(&self) -> MemoryMirroring {
         self.mirroring
+    }
+
+    fn get_snapshot_size(&self) -> usize {
+        size_of::<Self>() + self.prg_rom.len() + self.prg_ram.len() + self.chr_rom.len()
+    }
+
+    fn take_snapshot(&self, buff: &mut [u8]) -> Result<(), postcard::Error> {
+        assert_eq!(buff.len(), self.get_snapshot_size());
+        postcard::to_slice(self, buff)?;
+        Ok(())
     }
 }

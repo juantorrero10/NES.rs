@@ -1,5 +1,15 @@
+use imgui::Key::P;
 use std::{
-    cell::RefCell, env, error::Error, ffi::{OsStr, OsString}, fs, io::{Read, Write}, path::{Path, PathBuf}, rc::Rc, thread, time::Duration
+    cell::RefCell,
+    env,
+    error::Error,
+    ffi::{OsStr, OsString},
+    fs,
+    io::{Read, Write},
+    path::{Path, PathBuf},
+    rc::Rc,
+    thread,
+    time::Duration,
 };
 use thiserror::Error;
 
@@ -36,6 +46,7 @@ pub struct Nes {
     pub apu: Apu,
     pub controller: Controller,
     pub mapper: Box<dyn Mapper>,
+    mapper_id: u8,
     oam_dma_buffer: [u8; 256],
     ppu_cpu_clock_frequency: u8,
     save_file_path: OsString,
@@ -59,20 +70,22 @@ pub enum NesError {
     #[error("'{0:?}' is not a valid path")]
     InvalidPath(OsString),
     #[error("Couldnt serialize/capture the emulator: {0}")]
-    BinarySerializingError(#[from] postcard::Error)
+    PostCardError(#[from] postcard::Error),
+    #[error("File loaded didnt match the requiered length: {0}")]
+    LengthMismatch(String),
 }
 
 type Result<T> = std::result::Result<T, NesError>;
 
 impl Nes {
     pub fn new(game_file_path: &OsString, audio_producer: AudioProducer) -> Result<Self> {
-        let mapper = game_rom::load_rom(game_file_path)?;
+        let (mapper_id, mapper) = game_rom::load_rom(game_file_path)?;
         let cpu = Cpu::new();
         let bus_cpu = BusCpu::new();
         let ppu = Ppu::new();
         let apu = Apu::new(audio_producer, EMU_SAMPLE_RATE);
         let controller = Controller::default();
-        let bus_ppu = BusPpu::new();        
+        let bus_ppu = BusPpu::new();
 
         Ok(Nes {
             bus_cpu,
@@ -82,6 +95,7 @@ impl Nes {
             apu,
             controller,
             mapper,
+            mapper_id,
             oam_dma_buffer: [0u8; 256],
             ppu_cpu_clock_frequency: 0,
             save_file_path: Self::default_save_file_name(game_file_path)?,
@@ -114,8 +128,9 @@ impl Nes {
         // Save progress.
         self.try_store_save_file(None)?;
 
-        let new_mapper = game_rom::load_rom(game_file_path)?;
+        let (id, new_mapper) = game_rom::load_rom(game_file_path)?;
         self.mapper = new_mapper;
+        self.mapper_id = id;
 
         // Try load new game's data.
         let new_save_file_path = Self::default_save_file_name(game_file_path)?;
@@ -126,7 +141,7 @@ impl Nes {
     pub fn try_load_save_file(&mut self, path: Option<&OsString>) -> Result<()> {
         let path = match path {
             Some(s) => s,
-            None => &self.save_file_path
+            None => &self.save_file_path,
         };
 
         if !self.mapper.is_sram_battery_backed() {
@@ -154,12 +169,14 @@ impl Nes {
     pub fn try_store_save_file(&mut self, path: Option<&OsString>) -> Result<()> {
         let path = match path {
             Some(s) => s,
-            None => &self.save_file_path
+            None => &self.save_file_path,
         };
 
         if !self.mapper.is_sram_battery_backed() {
             log::warn!("Cannot save since game does not support saving.");
-            println!("   >   You can use 'File > Capture emulator state' to save your progress although saving this way is considerably heavier.");
+            println!(
+                "   >   You can use 'File > Capture emulator state' to save your progress although saving this way is considerably heavier."
+            );
             return Ok(());
         }
 
@@ -185,14 +202,70 @@ impl Nes {
         log::info!("PPU SC: {}, CYC: {}", self.ppu.scanline, self.ppu.cycle);
     }
 
-    pub fn save_cpu(&self) -> Result<()> {
-        let mut f = fs::File::create("cpu.sav")?;
-        let mut cpu_bin = Vec::with_capacity(size_of::<Cpu>());
+    pub fn take_snapshot(&self, path: &OsString) -> Result<()> {
+        let mut f = fs::File::create(path)?;
+        let length = size_of::<u8>()
+            + size_of::<Cpu>()
+            + self.bus_cpu.chips.ram.len()
+            + self.bus_ppu.get_nametables().len()
+            + self.bus_ppu.get_palette_data().len()
+            + self.mapper.get_snapshot_size();
+
+        let mut snapshot = Vec::with_capacity(length);
         unsafe {
-            cpu_bin.set_len(size_of::<Cpu>());
+            snapshot.set_len(length);
         }
-        postcard::to_slice(&self.cpu, &mut cpu_bin)?;
-        f.write(&cpu_bin)?;
+        let mut ptr = 0;
+        snapshot[0] = self.mapper_id;
+        ptr += size_of::<u8>();
+        postcard::to_slice(&self.cpu, &mut snapshot[ptr..(ptr + size_of::<Cpu>())])?;
+        ptr += size_of::<Cpu>();
+        snapshot[ptr..(ptr + self.bus_cpu.chips.ram.len())]
+            .copy_from_slice(&self.bus_cpu.chips.ram);
+
+        ptr += self.bus_cpu.chips.ram.len();
+        snapshot[ptr..(ptr + self.bus_ppu.get_nametables().len())]
+            .copy_from_slice(self.bus_ppu.get_nametables());
+        ptr += self.bus_ppu.get_nametables().len();
+        snapshot[ptr..(ptr + self.bus_ppu.get_palette_data().len())]
+            .copy_from_slice(self.bus_ppu.get_palette_data());
+        ptr += self.bus_ppu.get_palette_data().len();
+
+        self.mapper
+            .take_snapshot(&mut snapshot[ptr..(ptr + self.mapper.get_snapshot_size())])?;
+        f.write(&snapshot)?;
+        Ok(())
+    }
+
+    pub fn load_snapshot(&mut self, path: &OsString) -> Result<()> {
+        let mut f = fs::File::open(path)?;
+        let length = size_of::<u8>()
+            + size_of::<Cpu>()
+            + self.bus_cpu.chips.ram.len()
+            + self.bus_ppu.get_nametables().len()
+            + self.bus_ppu.get_palette_data().len()
+            + self.mapper.get_snapshot_size();
+
+        let mut snap = Vec::new();
+        f.read_to_end(&mut snap)?;
+        if snap.len() != length {
+            return Err(NesError::LengthMismatch(format!(
+                "Snapshot size: {length} != file loaded size: {}",
+                snap.len()
+            )));
+        }
+        self.mapper_id = snap[0];
+        let mut ptr = 1;
+        self.cpu = postcard::from_bytes(&snap[ptr..(ptr + size_of::<Cpu>())])?;
+        ptr += size_of::<Cpu>();
+        let ram_size = self.bus_cpu.chips.ram.len();
+        (&mut self.bus_cpu.chips.ram).copy_from_slice(&snap[ptr..(ptr + ram_size)]);
+        ptr += ram_size;
+        self.bus_ppu.set_nametables(&snap[ptr..(ptr + self.bus_ppu.get_nametables().len())]);
+        ptr += self.bus_ppu.get_nametables().len();
+        self.bus_ppu.set_palette_data(&snap[ptr..(ptr + self.bus_ppu.get_palette_data().len())]);
+        ptr += self.bus_ppu.get_palette_data().len();
+        self.mapper = game_rom::create_mapper_from_snapshot(self.mapper_id, &snap[ptr..])?;
         Ok(())
     }
 
@@ -320,11 +393,11 @@ impl Nes {
             self.ppu.nmi_signal = false;
         }
 
+        self.cpu.clock(None, instance, &mut self.mapper);
         self.apu.clock(instance);
         if self.apu.irq_pending() {
             self.cpu.irq(instance);
         }
-        self.cpu.clock(None, instance, &mut self.mapper);
 
         Ok(())
     }

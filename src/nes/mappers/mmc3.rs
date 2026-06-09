@@ -1,5 +1,7 @@
 use std::fmt::Write;
 
+use serde::{Deserialize, Serialize};
+
 use crate::nes::{MapperInfoReq, NesEvent};
 
 use super::*;
@@ -7,6 +9,7 @@ use super::*;
 const PRG_WINDOW_SIZE: usize = 8192;
 const CHR_WINDOW_SIZE: usize = 1024;
 
+#[derive(Serialize, Deserialize)]
 pub struct MMC3 {
     prg_rom: Vec<u8>,
     chr_rom: Vec<u8>,
@@ -326,6 +329,16 @@ impl Mapper for MMC3 {
 
     fn save_sram(&self) -> Option<&[u8]> {
         Some(&self.prg_ram)
+    }
+
+    fn get_snapshot_size(&self) -> usize {
+        size_of::<Self>() + self.prg_ram.len() + self.prg_rom.len() + self.chr_rom.len()
+    }
+
+    fn take_snapshot(&self, buff: &mut [u8]) -> Result<(), postcard::Error> {
+        assert_eq!(buff.len(), self.get_snapshot_size());
+        postcard::to_slice(self, buff)?;
+        Ok(())
     }
 
     #[allow(unused)]

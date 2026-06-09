@@ -3,8 +3,8 @@ use std::{collections::HashMap, ffi::OsString};
 use crate::nes::cpu::RegFile6502;
 
 pub struct FrameState<'a> {
+    pub show_press_start_msg: bool,
     pub dev_mode: bool,
-    pub screen: GameScreen,
     pub cpu_info: CpuInfo,
     pub dissasembly: Dissassebly<'a>,
     pub memory_editor: MemEdit<'a>,
@@ -16,7 +16,9 @@ pub enum FileAction {
     None,
     LoadROM(OsString),
     LoadSRAM(OsString),
-    StoreSRAM
+    StoreSRAM,
+    TakeSnapshot(OsString),
+    LoadSnapshot(OsString),
 }
 
 
@@ -30,10 +32,6 @@ pub struct PpuInfo<'a> {
     pub display_mapper_info: bool,
     pub mapper_info: &'a str,
 
-}
-pub struct GameScreen {
-    pub update: bool,
-    pub video_output: (*const u8, usize),
 }
 
 pub struct Dissassebly<'a> {

@@ -17,7 +17,7 @@ use simple_logger::SimpleLogger;
 use crate::{
     main_loop::AUDIO_BUFFER_SIZE, nes::{Nes, NesError, instruction_set::Instruction6502}, ui::{
         AppUI, ScreenOutput, Theme, framestate::{
-            Dissassebly, FrameState, GameScreen, MemEdit, PersistentFrameState, PpuInfo,
+            Dissassebly, FrameState, MemEdit, PersistentFrameState, PpuInfo,
         }
     }
 };
@@ -94,7 +94,6 @@ pub struct AppCtx {
     is_running: AtomicBool,
     update_info: AtomicBool,
     breakpoint: Option<u16>,
-    screen: ScreenOutput
 }
 
 fn load_rom_dialog() -> Option<OsString> {
@@ -113,6 +112,34 @@ fn load_rom_dialog() -> Option<OsString> {
 fn load_sram_dialog() -> Option<OsString> {
     let file = rfd::FileDialog::new()
         .add_filter("NES Game SRAM Snapshot", &["sram"])
+        .add_filter("any file", &["*"])
+        .set_directory("savefiles")
+        .pick_file();
+    match file {
+        Some(p) => Some(p.as_os_str().to_owned()),
+        None => {
+            None
+        }
+    }
+}
+
+fn store_emu_snapshot_dialog() -> Option<OsString> {
+    let file = rfd::FileDialog::new()
+        .add_filter("NES Emulator Snapshot", &["snap"])
+        .add_filter("any file", &["*"])
+        .set_directory("savefiles")
+        .save_file();
+    match file {
+        Some(p) => Some(p.as_os_str().to_owned()),
+        None => {
+            None
+        }
+    }
+}
+
+fn load_emu_snapshot_dialog() -> Option<OsString> {
+    let file = rfd::FileDialog::new()
+        .add_filter("NES Emulator Snapshot", &["snap"])
         .add_filter("any file", &["*"])
         .set_directory("savefiles")
         .pick_file();
@@ -148,7 +175,6 @@ fn nes_init() -> Result<Box<AppCtx>, NesError> {
         is_running: AtomicBool::new(false),
         update_info: AtomicBool::new(false),
         breakpoint: None,
-        screen: (std::ptr::null(), 0),
     });
     nes_ctx.nes.try_load_save_file(None)?;
     nes_ctx.nes.reset()?;

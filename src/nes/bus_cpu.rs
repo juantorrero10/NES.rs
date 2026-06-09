@@ -44,7 +44,7 @@ pub enum BusCpuError {
 pub struct BusCpu {
     fake_value: u8,
     open_bus_sim_reg: u8,
-    chips: BusCpuChips,
+    pub chips: BusCpuChips,
 }
 
 pub struct BusCpuChips {

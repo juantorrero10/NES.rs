@@ -29,6 +29,8 @@ pub struct Apu {
 
     irq_pending: bool,
 
+    clear_frame_irq_next_cycle: bool,
+
     hpf90: HighPassFilter,
     lpf19k: LowPassFilter,
 }
@@ -187,6 +189,7 @@ impl Apu {
             sample_rate,
             frame_irq_disable: false,
             frame_irq_signal: false,
+            clear_frame_irq_next_cycle: false,
             sequencer_mode: false,
             pulse_wave_chs: [PulseWaveChannel::default(); 2],
             triangle_ch: TriangleWaveChannel::default(),
@@ -218,45 +221,56 @@ impl Apu {
         self.sequencer_update();
         self.dmc_update(nes).unwrap();
 
+        if self.clear_frame_irq_next_cycle {
+            self.clear_frame_irq_next_cycle = false;
+            self.frame_irq_signal = false;
+        }
+
         self.frame_counter += 1;
         // 4 step
         if !self.sequencer_mode {
             match self.frame_counter {
-                7457 | 22371 => {
+                7458 | 22372 => {
                     self.envelope_update();
                     self.linear_counter_update();
                 }
-                14913 | 29829 => {
+                14916 => {
                     self.envelope_update();
                     self.linear_counter_update();
                     self.length_counter_update();
                     self.sweep_update();
-                    if self.frame_counter == 29829 {
-                        self.frame_counter = 0;
-                        if !self.frame_irq_disable {
-                            // Trigger IRQ on rising edge
-                            if !self.frame_irq_signal {
-                                self.frame_irq_signal = true;
-                                self.irq_pending = true;
-                            }
+                },
+                29831 => {
+                    self.envelope_update();
+                    self.linear_counter_update();
+                    self.length_counter_update();
+                    self.sweep_update();
+                    if !self.frame_irq_disable {
+                        // Trigger IRQ on rising edge
+                        if !self.frame_irq_signal {
+                            self.frame_irq_signal = true;
+                            self.irq_pending = true;
                         }
                     }
+                }
+                29832 => {
+                    self.frame_counter = 0;
                 }
             _ => {}
             }
         } else {
             match self.frame_counter {
-                7457 | 22371 => {
+                7458 | 22372 => {
                     self.envelope_update();
                     self.linear_counter_update();
                 },
-                29829 => {}
-                14913 | 37281 => {
+                29831 => {}
+                14916 | 37282 => {
                     self.envelope_update();
                     self.linear_counter_update();
                     self.length_counter_update();
                     self.sweep_update();
-                    if self.frame_counter == 37281 {
+                    if self.frame_counter == 37282 {
                         self.frame_counter = 0;
                     }
                 }
@@ -284,12 +298,12 @@ impl Apu {
         // The Nes audio chip applies some filters to introduce the simmetry in the waveform
         // Applying the same filters as the original hardware produces very muffled audio.
         // I've only kept the 90Hz hpf and ignored the 440Hz hpf.
-        // I also moved the original 14kHz lpf to 21KHz to maintain the original gritt.
+        // I also moved the original 14kHz lpf to 19KHz to maintain some gritt.
         // They solve the DC-offset problem and make the sound accurate enough.
 
         // Apply 90Hz HPf (cut off base)
         let mut filtered = self.hpf90.apply(mixed_sample);
-        // Apply 21KHz Lpf (barely a difference)
+        // Apply 19KHz Lpf (barely a difference)
         filtered = self.lpf19k.apply(filtered);
 
         // Make-up gain
@@ -535,12 +549,14 @@ impl Apu {
 
             ch.bytes_remaining -= 1;
             if ch.bytes_remaining == 0 {
+                // log::info!("0 bytes REM, IRQ_ENABLE: {}, IRQ_SIGNAL: {}", ch.irq_enable, ch.irq_signal);
                 if ch.loop_flag {
                     // Restart sample playback automatically if loop is enabled
                     ch.current_address = ch.sample_address;
                     ch.bytes_remaining = ch.sample_length;
                 } else if ch.irq_enable && !ch.irq_signal {
                     // Fire the IRQ edge trigger if loops are disabled
+                    // log::info!("Triggered");
                     ch.irq_signal = true;
                     self.irq_pending = true;
                 }
@@ -615,6 +631,9 @@ impl Apu {
                 ch.timer_reload = (ch.timer_reload & 0x0700) | data as u16;
             }
             3 => {
+                if !ch.enabled {
+                    return;
+                }
                 ch.timer_reload = (data as u16 & 0x7) << 8 | ch.timer_reload & 0x00FF;
                 ch.timer_countdown = ch.timer_reload + 1;
                 let len_idx = ((data & !0x7) >> 3) as usize;
@@ -648,6 +667,9 @@ impl Apu {
                     (self.triangle_ch.timer_reload & 0x0700) | data as u16;
             }
             3 => {
+                if !self.triangle_ch.enabled {
+                    return;
+                }
                 let len_idx = ((data & !0x7) >> 3) as usize;
                 self.triangle_ch.length_counter_load = LENGTH_LUT[len_idx];
                 self.triangle_ch.timer_reload =
@@ -676,6 +698,9 @@ impl Apu {
                 ch.noise_period = NOISE_PERIOD_LUT[(data & 0xF) as usize];
             }
             3 => {
+                if !self.triangle_ch.enabled {
+                    return;
+                }
                 let len_idx = ((data & !0x7) >> 3) as usize;
                 ch.length_counter_load = LENGTH_LUT[len_idx];
 
@@ -773,7 +798,7 @@ impl Apu {
                 }
                 self.frame_irq_disable = (data & 0x40) != 0;
             }
-            _ => {}
+            _ => {}         
         }
     }
 
@@ -806,7 +831,7 @@ impl Apu {
 
         if self.frame_irq_signal {
             ret |= 0x40;
-            self.frame_irq_signal = false;
+            self.clear_frame_irq_next_cycle = true;
         }
 
         if self.dmc_ch.irq_signal {
@@ -816,6 +841,7 @@ impl Apu {
         ret
     }
 
+    // >>>in APU<<<
     // Expose an IRQ line to the CPU, (Rising edge)
     #[inline(always)]
     pub fn irq_pending(&mut self) -> bool {

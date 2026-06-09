@@ -49,9 +49,6 @@ pub fn nes_loop(mut ctx: Box<AppCtx>) -> Result<(), Box<dyn Error>> {
 
     let mut t0 = Instant::now();
 
-    let (screen_ptr, screen_len) = ctx.nes.ppu.get_front_screen();
-    ctx.screen = (screen_ptr, screen_len);
-
     unsafe {
         SetAudioStreamCallback(*ctx.ui.raylib_audio_stream(), Some(nes_audio_callback));
         NES_CTX.store(std::ptr::from_mut(ctx.as_mut()), Ordering::Release);
@@ -118,11 +115,8 @@ pub fn nes_loop(mut ctx: Box<AppCtx>) -> Result<(), Box<dyn Error>> {
 
         let mut fs = FrameState {
             dev_mode,
+            show_press_start_msg: !ctx.nes.ppu.screen_not_null(),
             file_action: FileAction::None,
-            screen: GameScreen {
-                update: new_frame_generated,
-                video_output: (screen_ptr, screen_len),
-            },
             memory_editor: MemEdit {
                 paged_changed: false,
                 current_page: pfs.mem_edit_current_page,
@@ -200,6 +194,16 @@ pub fn nes_loop(mut ctx: Box<AppCtx>) -> Result<(), Box<dyn Error>> {
                 FileAction::LoadROM(path) => { ctx.nes.swap_rom(path)?; ctx.nes.reset()?; },
                 FileAction::LoadSRAM(path) => { ctx.nes.try_load_save_file(Some(path))?; },
                 FileAction::StoreSRAM => { ctx.nes.try_store_save_file(None)?; }
+                FileAction::TakeSnapshot(path) => { 
+                    if let Err(e) = ctx.nes.take_snapshot(path) {
+                        log::error!("{}", e);
+                    }
+                }
+                FileAction::LoadSnapshot(path) => { 
+                    if let Err(e) = ctx.nes.load_snapshot(path) {
+                        log::error!("{}", e);
+                    }
+                }
                 _ => {}
             }
 
@@ -216,7 +220,6 @@ pub fn nes_loop(mut ctx: Box<AppCtx>) -> Result<(), Box<dyn Error>> {
     }
 
     ctx.nes.try_store_save_file(None)?;
-    ctx.nes.save_cpu()?;
     Ok(())
 }
 

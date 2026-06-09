@@ -154,6 +154,28 @@ impl BusPpu {
             OpenBus => {}
         }
     }
+
+    #[inline(always)]
+    pub fn get_nametables(&self) -> &[u8] {
+        self.chips.nametables.as_slice()
+    }
+
+    #[inline(always)]
+    pub fn set_nametables(&mut self, b: &[u8]) {
+        assert_eq!(b.len(), self.chips.nametables.len());
+        self.chips.nametables.copy_from_slice(b);
+    }
+
+    #[inline(always)]
+    pub fn get_palette_data(&self) -> &[u8] {
+        self.palettes.as_slice()
+    }
+
+    #[inline(always)]
+    pub fn set_palette_data(&mut self, b: &[u8]) {
+        assert_eq!(b.len(), self.palettes.len());
+        self.palettes.copy_from_slice(b);
+    }
 }
 
 const SCREEN_WIDTH: usize = 256;
@@ -1141,6 +1163,14 @@ impl Ppu {
     pub fn get_front_screen(&mut self) -> ScreenOutput {
         let sc = self.front_screen();
         (sc.as_ptr(), sc.len())
+    }
+
+    #[inline(always)]
+    pub fn screen_not_null(&self) -> bool {
+        match self.current_buffer_selected {
+            false => self.screen_data_buffer0[0..=3] != [0, 0, 0, 0],
+            true => self.screen_data_buffer1[0..=3] != [0, 0, 0, 0],
+        }
     }
 
     #[inline(always)]
