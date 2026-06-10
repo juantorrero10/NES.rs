@@ -17,14 +17,13 @@ use crate::{
     AudioProducer,
     main_loop::EMU_SAMPLE_RATE,
     nes::{
-        NesEvent::InfoReq,
         apu::Apu,
         bus_cpu::{BusCpu, BusCpuError, IOResult},
         controller::Controller,
-        cpu::{Cpu, CpuError},
+        cpu::{Cpu},
         game_rom::ROMErr,
         mappers::Mapper,
-        ppu::{BusPpu, BusPpuChips, Ppu, PpuError, PpuRegister, ppu_flags::STATUS_VBLANK},
+        ppu::{BusPpu,Ppu, PpuRegister},
     },
 };
 
@@ -104,26 +103,6 @@ impl Nes {
         })
     }
 
-    #[inline]
-    pub fn default_save_file_name(game_file_path: &OsString) -> Result<OsString> {
-        // Ex: C:\\Users\\xxx\\smb.rom -> {CWD}\\savefiles\\smb.rom.sram
-        let file_name = Path::new(game_file_path)
-            .file_name()
-            .ok_or_else(|| NesError::InvalidPath(game_file_path.clone()))?;
-
-        let mut save_path = env::current_dir()?;
-        save_path.push("savefiles");
-
-        if !save_path.exists() {
-            std::fs::create_dir_all(&save_path)?;
-        }
-
-        save_path.push(file_name);
-        let mut save_path = save_path.into_os_string();
-        save_path.push(".sram");
-        Ok(save_path)
-    }
-
     pub fn swap_rom(&mut self, game_file_path: &OsString) -> Result<()> {
         // Save progress.
         self.try_store_save_file(None)?;
@@ -138,60 +117,6 @@ impl Nes {
         Ok(())
     }
 
-    pub fn try_load_save_file(&mut self, path: Option<&OsString>) -> Result<()> {
-        let path = match path {
-            Some(s) => s,
-            None => &self.save_file_path,
-        };
-
-        if !self.mapper.is_sram_battery_backed() {
-            log::info!("Game does not support saving.");
-            return Ok(());
-        }
-        let mut save_file = match std::fs::File::open(path) {
-            Ok(s) => s,
-            Err(e) => {
-                log::warn!("Couldn't load save file: {e}");
-                return Ok(());
-            }
-        };
-
-        let mut file_contents: Vec<u8> = Vec::new();
-        save_file.read_to_end(&mut file_contents)?;
-        self.mapper.load_sram(&file_contents);
-
-        // Change the save file path
-        log::info!("Loaded save file: {:?}", path);
-        self.save_file_path = path.clone();
-        Ok(())
-    }
-
-    pub fn try_store_save_file(&mut self, path: Option<&OsString>) -> Result<()> {
-        let path = match path {
-            Some(s) => s,
-            None => &self.save_file_path,
-        };
-
-        if !self.mapper.is_sram_battery_backed() {
-            log::warn!("Cannot save since game does not support saving.");
-            println!(
-                "   >   You can use 'File > Capture emulator state' to save your progress although saving this way is considerably heavier."
-            );
-            return Ok(());
-        }
-
-        let sram = match self.mapper.save_sram() {
-            Some(s) => s,
-            None => return Ok(()),
-        };
-
-        let mut save_file = std::fs::File::create(path)?;
-        save_file.write(sram)?;
-
-        log::info!("Saved progress to {:?}", path);
-        Ok(())
-    }
-
     #[cfg(feature = "log")]
     pub fn toggle_log(&mut self) {
         self.log ^= true;
@@ -200,73 +125,6 @@ impl Nes {
     #[cfg(feature = "log")]
     pub fn log_ppu_state(&self) {
         log::info!("PPU SC: {}, CYC: {}", self.ppu.scanline, self.ppu.cycle);
-    }
-
-    pub fn take_snapshot(&self, path: &OsString) -> Result<()> {
-        let mut f = fs::File::create(path)?;
-        let length = size_of::<u8>()
-            + size_of::<Cpu>()
-            + self.bus_cpu.chips.ram.len()
-            + self.bus_ppu.get_nametables().len()
-            + self.bus_ppu.get_palette_data().len()
-            + self.mapper.get_snapshot_size();
-
-        let mut snapshot = Vec::with_capacity(length);
-        unsafe {
-            snapshot.set_len(length);
-        }
-        let mut ptr = 0;
-        snapshot[0] = self.mapper_id;
-        ptr += size_of::<u8>();
-        postcard::to_slice(&self.cpu, &mut snapshot[ptr..(ptr + size_of::<Cpu>())])?;
-        ptr += size_of::<Cpu>();
-        snapshot[ptr..(ptr + self.bus_cpu.chips.ram.len())]
-            .copy_from_slice(&self.bus_cpu.chips.ram);
-
-        ptr += self.bus_cpu.chips.ram.len();
-        snapshot[ptr..(ptr + self.bus_ppu.get_nametables().len())]
-            .copy_from_slice(self.bus_ppu.get_nametables());
-        ptr += self.bus_ppu.get_nametables().len();
-        snapshot[ptr..(ptr + self.bus_ppu.get_palette_data().len())]
-            .copy_from_slice(self.bus_ppu.get_palette_data());
-        ptr += self.bus_ppu.get_palette_data().len();
-
-        self.mapper
-            .take_snapshot(&mut snapshot[ptr..(ptr + self.mapper.get_snapshot_size())])?;
-        f.write(&snapshot)?;
-        Ok(())
-    }
-
-    pub fn load_snapshot(&mut self, path: &OsString) -> Result<()> {
-        let mut f = fs::File::open(path)?;
-        let length = size_of::<u8>()
-            + size_of::<Cpu>()
-            + self.bus_cpu.chips.ram.len()
-            + self.bus_ppu.get_nametables().len()
-            + self.bus_ppu.get_palette_data().len()
-            + self.mapper.get_snapshot_size();
-
-        let mut snap = Vec::new();
-        f.read_to_end(&mut snap)?;
-        if snap.len() != length {
-            return Err(NesError::LengthMismatch(format!(
-                "Snapshot size: {length} != file loaded size: {}",
-                snap.len()
-            )));
-        }
-        self.mapper_id = snap[0];
-        let mut ptr = 1;
-        self.cpu = postcard::from_bytes(&snap[ptr..(ptr + size_of::<Cpu>())])?;
-        ptr += size_of::<Cpu>();
-        let ram_size = self.bus_cpu.chips.ram.len();
-        (&mut self.bus_cpu.chips.ram).copy_from_slice(&snap[ptr..(ptr + ram_size)]);
-        ptr += ram_size;
-        self.bus_ppu.set_nametables(&snap[ptr..(ptr + self.bus_ppu.get_nametables().len())]);
-        ptr += self.bus_ppu.get_nametables().len();
-        self.bus_ppu.set_palette_data(&snap[ptr..(ptr + self.bus_ppu.get_palette_data().len())]);
-        ptr += self.bus_ppu.get_palette_data().len();
-        self.mapper = game_rom::create_mapper_from_snapshot(self.mapper_id, &snap[ptr..])?;
-        Ok(())
     }
 
     pub fn reset(&mut self) -> Result<()> {
@@ -511,5 +369,156 @@ impl Nes {
             NesEvent::ApuReadFrom(addr) => Ok(Some(self.apu.event_cpu_has_read(addr))),
             _ => Err(Box::new(NesError::UnhandledEvent(e))),
         }
+    }
+}
+
+
+
+
+// Saving/Loading
+impl Nes {
+    #[inline]
+    pub fn default_save_file_name(game_file_path: &OsString) -> Result<OsString> {
+        // Ex: C:\\Users\\xxx\\smb.rom -> {CWD}\\savefiles\\smb.rom.sram
+        let file_name = Path::new(game_file_path)
+            .file_name()
+            .ok_or_else(|| NesError::InvalidPath(game_file_path.clone()))?;
+
+        let mut save_path = env::current_dir()?;
+        save_path.push("savefiles");
+
+        if !save_path.exists() {
+            std::fs::create_dir_all(&save_path)?;
+        }
+
+        save_path.push(file_name);
+        let mut save_path = save_path.into_os_string();
+        save_path.push(".sram");
+        Ok(save_path)
+    }
+
+    pub fn try_load_save_file(&mut self, path: Option<&OsString>) -> Result<()> {
+        let path = match path {
+            Some(s) => s,
+            None => &self.save_file_path,
+        };
+
+        if !self.mapper.is_sram_battery_backed() {
+            log::info!("Game does not support saving.");
+            return Ok(());
+        }
+        let mut save_file = match std::fs::File::open(path) {
+            Ok(s) => s,
+            Err(e) => {
+                log::warn!("Couldn't load save file: {e}");
+                return Ok(());
+            }
+        };
+
+        let mut file_contents: Vec<u8> = Vec::new();
+        save_file.read_to_end(&mut file_contents)?;
+        self.mapper.load_sram(&file_contents);
+
+        // Change the save file path
+        log::info!("Loaded save file: {:?}", path);
+        self.save_file_path = path.clone();
+        Ok(())
+    }
+
+    pub fn try_store_save_file(&mut self, path: Option<&OsString>) -> Result<()> {
+        let path = match path {
+            Some(s) => s,
+            None => &self.save_file_path,
+        };
+
+        if !self.mapper.is_sram_battery_backed() {
+            log::warn!("Cannot save since game does not support saving.");
+            println!(
+                "   >   You can use 'File > Capture emulator state' to save your progress although saving this way is considerably heavier."
+            );
+            return Ok(());
+        }
+
+        let sram = match self.mapper.save_sram() {
+            Some(s) => s,
+            None => return Ok(()),
+        };
+
+        let mut save_file = std::fs::File::create(path)?;
+        save_file.write(sram)?;
+
+        log::info!("Saved progress to {:?}", path);
+        Ok(())
+    }
+
+    pub fn take_snapshot(&self, path: &OsString) -> Result<()> {
+        let f = fs::File::create(path)?;
+        let mut encoder = zstd::Encoder::new(f, 22)?;
+        let length = size_of::<u8>()
+            + size_of::<Cpu>()
+            + self.bus_cpu.chips.ram.len()
+            + self.bus_ppu.get_nametables().len()
+            + self.bus_ppu.get_palette_data().len()
+            + self.mapper.get_snapshot_size();
+
+        let mut snapshot = Vec::with_capacity(length);
+        unsafe {
+            snapshot.set_len(length);
+        }
+        let mut ptr = 0;
+        snapshot[0] = self.mapper_id;
+        ptr += size_of::<u8>();
+        postcard::to_slice(&self.cpu, &mut snapshot[ptr..(ptr + size_of::<Cpu>())])?;
+        ptr += size_of::<Cpu>();
+        snapshot[ptr..(ptr + self.bus_cpu.chips.ram.len())]
+            .copy_from_slice(&self.bus_cpu.chips.ram);
+
+        ptr += self.bus_cpu.chips.ram.len();
+        snapshot[ptr..(ptr + self.bus_ppu.get_nametables().len())]
+            .copy_from_slice(self.bus_ppu.get_nametables());
+        ptr += self.bus_ppu.get_nametables().len();
+        snapshot[ptr..(ptr + self.bus_ppu.get_palette_data().len())]
+            .copy_from_slice(self.bus_ppu.get_palette_data());
+        ptr += self.bus_ppu.get_palette_data().len();
+
+        self.mapper
+            .take_snapshot(&mut snapshot[ptr..(ptr + self.mapper.get_snapshot_size())])?;
+        encoder.write_all(&snapshot)?;
+        encoder.finish()?;
+        Ok(())
+    }
+
+    pub fn load_snapshot(&mut self, path: &OsString) -> Result<()> {
+        let f = fs::File::open(path)?;
+        let mut decoder = zstd::Decoder::new(f)?;
+        let length = size_of::<u8>()
+            + size_of::<Cpu>()
+            + self.bus_cpu.chips.ram.len()
+            + self.bus_ppu.get_nametables().len()
+            + self.bus_ppu.get_palette_data().len()
+            + self.mapper.get_snapshot_size();
+
+        let mut snap = Vec::new();
+        decoder.read_to_end(&mut snap)?;
+        decoder.finish();
+        if snap.len() != length {
+            return Err(NesError::LengthMismatch(format!(
+                "Snapshot size: {length} != file loaded size: {}",
+                snap.len()
+            )));
+        }
+        self.mapper_id = snap[0];
+        let mut ptr = 1;
+        self.cpu = postcard::from_bytes(&snap[ptr..(ptr + size_of::<Cpu>())])?;
+        ptr += size_of::<Cpu>();
+        let ram_size = self.bus_cpu.chips.ram.len();
+        (&mut self.bus_cpu.chips.ram).copy_from_slice(&snap[ptr..(ptr + ram_size)]);
+        ptr += ram_size;
+        self.bus_ppu.set_nametables(&snap[ptr..(ptr + self.bus_ppu.get_nametables().len())]);
+        ptr += self.bus_ppu.get_nametables().len();
+        self.bus_ppu.set_palette_data(&snap[ptr..(ptr + self.bus_ppu.get_palette_data().len())]);
+        ptr += self.bus_ppu.get_palette_data().len();
+        self.mapper = game_rom::create_mapper_from_snapshot(self.mapper_id, &snap[ptr..])?;
+        Ok(())
     }
 }

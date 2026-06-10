@@ -1,9 +1,8 @@
-//#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+#![windows_subsystem = "windows"]
 
-//use tracy_client::ProfiledAllocator;
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::System::Console::{AttachConsole, ATTACH_PARENT_PROCESS};
 
-//#[global_allocator]
-//static GLOBAL: ProfiledAllocator<std::alloc::System> = ProfiledAllocator::new(std::alloc::System, 0);
 
 use std::{
     collections::HashMap, error::Error, ffi::OsString, fmt::Write, sync::{Arc, atomic::AtomicBool}, time::{Instant}
@@ -210,7 +209,19 @@ fn app_init() -> AppUI {
 
 }
 
+#[cfg(target_os = "windows")]
+fn attach_console() {
+    unsafe {
+        if AttachConsole(ATTACH_PARENT_PROCESS) != 0 {
+            let _ = std::io::stdout();
+            let _ = std::io::stderr();
+        }
+    }
+}
+
 fn main() {
+    #[cfg(target_os = "windows")]
+    attach_console();
     SimpleLogger::new()
         .with_level(log::LevelFilter::Info)
         .with_timestamp_format(time::macros::format_description!(

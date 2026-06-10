@@ -3,7 +3,7 @@ use std::fmt::Write;
 use imgui::{FontId, StyleColor, StyleVar, WindowFlags, sys::ImGuiCond_FirstUseEver};
 use log::info;
 use raylib::{
-    RaylibHandle, RaylibThread, audio::{AudioStream, RaylibAudio}, color::Color, drawing::{RaylibDraw, RaylibTextureModeExt}, ffi::{IsAudioStreamProcessed, LoadAudioStream, PlayAudioStream, SetAudioStreamBufferSizeDefault, UpdateAudioStream}, texture::{RaylibRenderTexture2D, RaylibTexture2D, RenderTexture2D}
+    core::RaylibHandle, core::RaylibThread, audio::{AudioStream, RaylibAudio}, color::Color, drawing::{RaylibDraw, RaylibTextureModeExt}, ffi::{IsAudioStreamProcessed, LoadAudioStream, PlayAudioStream, SetAudioStreamBufferSizeDefault, UpdateAudioStream}, texture::{RaylibRenderTexture2D, RaylibTexture2D, RenderTexture2D}
 };
 use raylib_imgui_rs::Renderer;
 
