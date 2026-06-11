@@ -202,10 +202,9 @@ pub struct Ppu {
     total: Instant,
     n_frames: f64,
 
-    screen_data_buffer0: Vec<u8>,
-    screen_data_buffer1: Vec<u8>,
+    screen_data_buffers: [Vec<u8>; 3],
 
-    current_buffer_selected: bool,
+    current_buffer_selected: usize,
 
     ctrl: u8,
     status: u8,
@@ -945,9 +944,18 @@ impl PpuRegister {
 
 impl Ppu {
     pub fn new() -> Self {
+        let screens = {
+            let ret = [
+                Vec::with_capacity(SCREEN_SIZE),
+                Vec::with_capacity(SCREEN_SIZE),
+                Vec::with_capacity(SCREEN_SIZE),
+            ];
+
+            ret
+        };
+
         Ppu {
-            screen_data_buffer0: vec![0u8; SCREEN_SIZE],
-            screen_data_buffer1: vec![0u8; SCREEN_SIZE],
+            screen_data_buffers: screens,
             current_buffer_selected: false,
             oam: OAM {
                 mem: [OAttribute::default(); 64],
