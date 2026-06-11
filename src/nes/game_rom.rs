@@ -14,6 +14,7 @@ pub enum MemoryMirroring {
 
 #[repr(packed)]
 #[derive(Debug)]
+#[allow(unused)]
 struct NesGameHeader {
     magic: u32,
     prg_rom_chunks: u8,

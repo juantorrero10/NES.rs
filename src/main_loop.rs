@@ -47,6 +47,8 @@ pub fn nes_loop(mut ctx: Box<AppCtx>) -> Result<(), Box<dyn Error>> {
 
     let mut micros_since_last_frame;
 
+    // let mut current_frame_drawn = false;
+
     let mut t0 = Instant::now();
 
     unsafe {
@@ -183,6 +185,8 @@ pub fn nes_loop(mut ctx: Box<AppCtx>) -> Result<(), Box<dyn Error>> {
                 .set_window_title(ctx.ui.raylib_thread(), &title);
 
             fs = ctx.ui.update(fs);
+
+            // current_frame_drawn = true;
             t0 = Instant::now();
 
             bkpt = fs.dissasembly.bkpt;
@@ -199,10 +203,12 @@ pub fn nes_loop(mut ctx: Box<AppCtx>) -> Result<(), Box<dyn Error>> {
                         log::error!("{}", e);
                     }
                 }
-                FileAction::LoadSnapshot(path) => { 
+                FileAction::LoadSnapshot(path) => {
+                    ctx.is_running.store(false, Ordering::Release);
                     if let Err(e) = ctx.nes.load_snapshot(path) {
                         log::error!("{}", e);
                     }
+                    ctx.is_running.store(true, Ordering::Release);
                 }
                 _ => {}
             }

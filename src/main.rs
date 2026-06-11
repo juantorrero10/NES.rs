@@ -1,11 +1,10 @@
 #![windows_subsystem = "windows"]
 
 #[cfg(target_os = "windows")]
-use windows_sys::Win32::System::Console::{AttachConsole, ATTACH_PARENT_PROCESS};
-
+use windows_sys::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};
 
 use std::{
-    collections::HashMap, error::Error, ffi::OsString, fmt::Write, sync::{Arc, atomic::AtomicBool}, time::{Instant}
+    collections::HashMap, error::Error, ffi::OsString, fmt::Write, path::PathBuf, sync::{Arc, atomic::AtomicBool}, time::Instant
 };
 
 use colored::Colorize;
@@ -14,16 +13,17 @@ use ringbuf::{SharedRb, storage::Heap, traits::Split, wrap::caching::Caching};
 use simple_logger::SimpleLogger;
 
 use crate::{
-    main_loop::AUDIO_BUFFER_SIZE, nes::{Nes, NesError, instruction_set::Instruction6502}, ui::{
-        AppUI, ScreenOutput, Theme, framestate::{
-            Dissassebly, FrameState, MemEdit, PersistentFrameState, PpuInfo,
-        }
-    }
+    main_loop::AUDIO_BUFFER_SIZE,
+    nes::{Nes, NesError, instruction_set::Instruction6502},
+    ui::{
+        AppUI, Theme,
+        framestate::{Dissassebly, FrameState, MemEdit, PersistentFrameState, PpuInfo},
+    },
 };
 
+mod main_loop;
 mod nes;
 mod ui;
-mod main_loop;
 
 fn get_dissasembly(
     nes: &mut Nes,
@@ -78,8 +78,10 @@ fn get_ppu_info(
     out_pal: &mut [[[u8; 4]; 4]; 8],
 ) {
     let nes_ptr = std::ptr::from_mut(nes);
-    nes.ppu.debug_extract_sprite_canvas(0, selected_palette, None, nes_ptr, out_chr0);
-    nes.ppu.debug_extract_sprite_canvas(1, selected_palette, None, nes_ptr, out_chr1);
+    nes.ppu
+        .debug_extract_sprite_canvas(0, selected_palette, None, nes_ptr, out_chr0);
+    nes.ppu
+        .debug_extract_sprite_canvas(1, selected_palette, None, nes_ptr, out_chr1);
     nes.ppu.debug_extract_palettes(&mut *out_pal, nes_ptr);
 }
 
@@ -102,9 +104,7 @@ fn load_rom_dialog() -> Option<OsString> {
         .pick_file();
     match file {
         Some(p) => Some(p.as_os_str().to_owned()),
-        None => {
-            None
-        }
+        None => None,
     }
 }
 
@@ -116,9 +116,7 @@ fn load_sram_dialog() -> Option<OsString> {
         .pick_file();
     match file {
         Some(p) => Some(p.as_os_str().to_owned()),
-        None => {
-            None
-        }
+        None => None,
     }
 }
 
@@ -130,9 +128,7 @@ fn store_emu_snapshot_dialog() -> Option<OsString> {
         .save_file();
     match file {
         Some(p) => Some(p.as_os_str().to_owned()),
-        None => {
-            None
-        }
+        None => None,
     }
 }
 
@@ -144,26 +140,22 @@ fn load_emu_snapshot_dialog() -> Option<OsString> {
         .pick_file();
     match file {
         Some(p) => Some(p.as_os_str().to_owned()),
-        None => {
-            None
-        }
+        None => None,
     }
 }
 
-
-
 fn nes_init() -> Result<Box<AppCtx>, NesError> {
     let mut args = std::env::args();
-    while let Some(s) = args.next() && s.starts_with("--") {}
+    while let Some(s) = args.next()
+        && s.starts_with("--")
+    {}
 
     let rom_path = match args.next() {
         Some(f) => OsString::from(&f),
-        _ => {
-            match load_rom_dialog() {
-                Some(s) => s,
-                None => std::process::exit(1),
-            }
-        }
+        _ => match load_rom_dialog() {
+            Some(s) => s,
+            None => std::process::exit(1),
+        },
     };
     let audio: SharedRb<ringbuf::storage::Heap<f32>> = SharedRb::new(AUDIO_BUFFER_SIZE);
     let (tx, rx) = audio.split();
@@ -206,7 +198,6 @@ fn app_init() -> AppUI {
         AppUI::new()
     };
     app_ui
-
 }
 
 #[cfg(target_os = "windows")]
@@ -219,18 +210,34 @@ fn attach_console() {
     }
 }
 
+fn get_correct_cwd() -> PathBuf {
+    // 1. Check if we are running through Cargo
+    if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
+        return PathBuf::from(manifest_dir);
+    }
+
+    // 2. Fallback for production: Anchor strictly to where the .exe file sits
+    let mut exe_path = std::env::current_exe().expect("Failed to get executable directory");
+    exe_path.pop(); // Remove the executable name to get the directory
+    exe_path
+}
+
 fn main() {
     #[cfg(target_os = "windows")]
     attach_console();
-    SimpleLogger::new()
-        .with_level(log::LevelFilter::Info)
-        .with_timestamp_format(time::macros::format_description!(
-            "[[[year]-[month]-[day] [hour]:[minute]:[second]]"
-        ))
-        .with_colors(true)
-        .init()
-        .expect("Failure: Logger failed");
 
+    std::env::set_current_dir(get_correct_cwd()).expect("Could not set the correct CWD");
+
+    SimpleLogger::new()
+    .with_level(log::LevelFilter::Info)
+    .with_timestamp_format(time::macros::format_description!(
+        "[[[year]-[month]-[day] [hour]:[minute]:[second]]"
+    ))
+    .with_colors(true)
+    .init()
+    .expect("Failure: Logger failed");
+
+    log::info!("CWD: {:?}", std::env::current_dir().unwrap());
     match nes_init() {
         Err(e) => eprintln!(
             "{} {}: {}",
@@ -241,16 +248,20 @@ fn main() {
         Ok(n) => {
             log::info!("Emulator initialized.");
             match main_loop::nes_loop(n) {
-                Err(e) => println!(
-                    "{} {}: {}",
-                    "Runtime".green().italic(),
-                    "NES Emulator panicked!".red().bold(),
-                    e
-                ),
+                Err(e) => {
+                    println!(
+                        "{} {}: {}",
+                        "Runtime".green().italic(),
+                        "NES Emulator panicked!".red().bold(),
+                        e
+                    )
+                }
                 Ok(_) => {
                     return;
                 }
             }
         }
     }
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line).unwrap();
 }

@@ -1,9 +1,7 @@
 use std::{error::Error, fmt::Write};
 
-use thiserror::Error;
-
 use crate::nes::{
-    Nes, NesError, bus_cpu::{BusCpu, BusCpuError}, cpu::{Cpu, CpuError}, instruction_set::addressing::AddrMode
+    Nes, cpu::{Cpu}, instruction_set::addressing::AddrMode
 };
 
 /*#[derive(Error, Debug)]
@@ -270,6 +268,15 @@ pub static INSTRUCTION_LUT: [Instruction6502; 256] = {
     }
     let mut table = [DEF; 256];
     table[0x00] = ins!("BRK", brk, IMM, 2);
+
+    // Unofficial instruction
+    table[0x03] = ins!("SLO", slo, IZX, 8);
+    table[0x07] = ins!("SLO", slo, ZP0, 5);
+    table[0x0F] = ins!("SLO", slo, ABS, 6);
+    table[0x13] = ins!("SLO", slo, IZY, 8);
+    table[0x17] = ins!("SLO", slo, ZPX, 6);
+    table[0x1B] = ins!("SLO", slo, ABY, 7);
+    table[0x1F] = ins!("SLO", slo, ABX, 7);
 
     table[0x69] = ins!("ADC", adc, IMM, 2);
     table[0x65] = ins!("ADC", adc, ZP0, 3);
@@ -1116,5 +1123,16 @@ pub mod instructions {
         c.set_flag(Flag6502::Z, c.registers.a == 0);
         c.set_flag(Flag6502::N, (c.registers.a & 0x80) != 0);
         Ok(false)
+    });
+
+    handler!(slo, c, bus, {
+        let mut mem = bus.read(c.state.addr_abs)?;
+        c.set_flag(Flag6502::C, (mem & 0x80) != 0);
+        mem <<= 1;
+        bus.write(c.state.addr_abs, mem)?;
+        c.registers.a |= mem;
+        c.set_flag(Flag6502::Z, c.registers.a == 0);
+        c.set_flag(Flag6502::N, (c.registers.a & 0x80) != 0);
+        Ok(true)
     });
 }

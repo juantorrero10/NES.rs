@@ -1,15 +1,14 @@
 use std::error::Error;
-use std::fmt::{Debug, Write};
+use std::fmt::{Debug};
 
 use colored::Colorize;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::nes::Nes;
 use crate::nes::mappers::Mapper;
-use crate::nes::{Nes, NesError};
-use crate::nes::bus_cpu::{BusCpu, BusCpuError};
 use crate::nes::instruction_set::{
-    INSTRUCTION_LUT, Instruction6502, addressing,
+    INSTRUCTION_LUT, addressing,
 };
 use crate::ui::framestate::{CpuInfo};
 

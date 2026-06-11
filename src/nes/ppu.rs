@@ -8,7 +8,6 @@ use crate::{nes::{
     game_rom::MemoryMirroring,
     mappers::Mapper,
     ppu::{
-        self,
         BusPpuTarget::{Memory, OpenBus},
     },
 }, ui::ScreenOutput};

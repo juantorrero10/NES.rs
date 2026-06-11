@@ -3,7 +3,7 @@ use std::fmt::Write;
 use imgui::{FontId, StyleColor, StyleVar, WindowFlags, sys::ImGuiCond_FirstUseEver};
 use log::info;
 use raylib::{
-    core::RaylibHandle, core::RaylibThread, audio::{AudioStream, RaylibAudio}, color::Color, drawing::{RaylibDraw, RaylibTextureModeExt}, ffi::{IsAudioStreamProcessed, LoadAudioStream, PlayAudioStream, SetAudioStreamBufferSizeDefault, UpdateAudioStream}, texture::{RaylibRenderTexture2D, RaylibTexture2D, RenderTexture2D}
+    audio::{AudioStream, RaylibAudio}, color::Color, core::{RaylibHandle, RaylibThread}, drawing::{RaylibDraw, RaylibTextureModeExt}, ffi::{IsAudioStreamProcessed, LoadAudioStream, PlayAudioStream, SetAudioStreamBufferSizeDefault, SetWindowIcon, UpdateAudioStream}, texture::{Image, RaylibRenderTexture2D, RaylibTexture2D, RenderTexture2D}
 };
 use raylib_imgui_rs::Renderer;
 
@@ -275,6 +275,11 @@ impl AppUI {
         unsafe { SetAudioStreamBufferSizeDefault(AUDIO_BUFFER_SIZE as i32); }
         let stream = unsafe {LoadAudioStream(EMU_SAMPLE_RATE,32, 1)};
         unsafe{ PlayAudioStream(stream); }
+
+        let icon = include_bytes!("../../assets/icon.png");
+        if let Ok(i) = raylib::core::texture::Image::load_image_from_mem(".png", icon) {
+            rl.set_window_icon(i);
+        }
 
         // rl.set_target_fps(60);
 
