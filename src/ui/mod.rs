@@ -224,6 +224,8 @@ impl AppUI {
             .title("Nes")
             .resizable()
             .build();
+        //rl.set_target_fps(60);
+
         let mut ctx = imgui::Context::create();
         ctx.io_mut().config_flags |= imgui::ConfigFlags::DOCKING_ENABLE;
         let style = ctx.style_mut();

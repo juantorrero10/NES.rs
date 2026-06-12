@@ -202,9 +202,10 @@ pub struct Ppu {
     total: Instant,
     n_frames: f64,
 
-    screen_data_buffers: [Vec<u8>; 3],
+    screen_data_buffer0: Vec<u8>,
+    screen_data_buffer1: Vec<u8>,
 
-    current_buffer_selected: usize,
+    current_buffer_selected: bool,
 
     ctrl: u8,
     status: u8,
@@ -407,14 +408,6 @@ impl Ppu {
             self.scanline += 1;
             if self.scanline > SCANLINE_HEIGHT {
                 self.scanline = -1;
-                // self.n_frames += 1.0;
-                // let elapsed = self.t0.elapsed().as_micros() as f64;
-                // log::info!(
-                //     "FPS delay: {:.4} ms ({:.4} FPS)",
-                //     elapsed / 1_000.0,
-                //     1_000_000.0 / elapsed
-                // );
-                // self.t0 = Instant::now();
                 self.frame_complete = true;
                 self.is_odd_frame ^= true;
             }
@@ -944,18 +937,10 @@ impl PpuRegister {
 
 impl Ppu {
     pub fn new() -> Self {
-        let screens = {
-            let ret = [
-                Vec::with_capacity(SCREEN_SIZE),
-                Vec::with_capacity(SCREEN_SIZE),
-                Vec::with_capacity(SCREEN_SIZE),
-            ];
-
-            ret
-        };
 
         Ppu {
-            screen_data_buffers: screens,
+            screen_data_buffer0: vec![0u8; SCREEN_SIZE],
+            screen_data_buffer1: vec![0u8; SCREEN_SIZE],
             current_buffer_selected: false,
             oam: OAM {
                 mem: [OAttribute::default(); 64],

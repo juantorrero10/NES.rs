@@ -46,10 +46,12 @@ pub fn nes_loop(mut ctx: Box<AppCtx>) -> Result<(), Box<dyn Error>> {
     let mut ppu_regs = String::with_capacity(128);
 
     let mut micros_since_last_frame;
+    let mut micros_since_last_gameframe;
 
-    // let mut current_frame_drawn = false;
+    let mut current_frame_drawn = false;
 
     let mut t0 = Instant::now();
+    let mut t0g = Instant::now();
 
     unsafe {
         SetAudioStreamCallback(*ctx.ui.raylib_audio_stream(), Some(nes_audio_callback));
@@ -66,11 +68,15 @@ pub fn nes_loop(mut ctx: Box<AppCtx>) -> Result<(), Box<dyn Error>> {
                 .update_controller_status(ctx.ui.raylib_handle(), None);
         }
 
-        if ctx.update_info.load(Ordering::Acquire) {
+        let updated = ctx.update_info.load(Ordering::Acquire);
+
+
+        if updated {
             pfs.mem_edit_page_changed = true;
             frame_has_changed = true;
             ctx.update_info.store(false, Ordering::Release);
             ctx.ui.update_game_screen(ctx.nes.ppu.get_front_screen());
+            current_frame_drawn = false;
         }
 
         #[cfg(feature = "log")]
@@ -146,6 +152,7 @@ pub fn nes_loop(mut ctx: Box<AppCtx>) -> Result<(), Box<dyn Error>> {
         };
 
         micros_since_last_frame = t0.elapsed().as_micros();
+        micros_since_last_gameframe = t0g.elapsed().as_micros();
         // micros_since_last_game_frame = t0_game.elapsed().as_micros();
 
         // log::info!("Time last frame: {}", micros_since_last_frame as f64 / 1_000_000.0);
@@ -168,17 +175,28 @@ pub fn nes_loop(mut ctx: Box<AppCtx>) -> Result<(), Box<dyn Error>> {
             //         new_frame_generated
             //     );
             // }
+            if !current_frame_drawn {
+                t0g = Instant::now();
+            }
+            current_frame_drawn = true;
             title.clear();
             let version_tag;
             version_tag = match cfg!(debug_assertions) {
                 true => "Debug",
                 false => "Release",
             };
-            let _ = write!(
-                title,
-                "ShittyEmu.rs [{version_tag}] (FPS:{:.2})",
-                (1_000_000.0 / (us))
-            );
+            if ctx.is_running.load(Ordering::Acquire) {
+                let _ = write!(
+                    title,
+                    "ShittyEmu.rs [{version_tag}] (FPS:{:.2})",
+                    (1_000_000.0 / (micros_since_last_gameframe as f64))
+                );
+            } else {
+                let _ = write!(
+                    title,
+                    "ShittyEmu.rs [{version_tag}] (FPS:--)",
+                );
+            }
             // log::info!("FPS: {}, Delay: {} ms, New frame? {}", 1_000_000.0 / us, us / 1000.0, new_frame_generated);
             ctx.ui
                 .raylib_handle()
@@ -186,7 +204,7 @@ pub fn nes_loop(mut ctx: Box<AppCtx>) -> Result<(), Box<dyn Error>> {
 
             fs = ctx.ui.update(fs);
 
-            // current_frame_drawn = true;
+            
             t0 = Instant::now();
 
             bkpt = fs.dissasembly.bkpt;
@@ -215,7 +233,7 @@ pub fn nes_loop(mut ctx: Box<AppCtx>) -> Result<(), Box<dyn Error>> {
 
             pfs = PersistentFrameState::save_persistent_info(fs);
         } else {
-            std::thread::yield_now();
+            // std::hint::spin_loop();
         }
 
         // real_time = false;
