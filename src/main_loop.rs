@@ -6,7 +6,7 @@ use imgui::ColorFormat::Float;
 use raylib::ffi::SetAudioStreamCallback;
 use ringbuf::traits::Consumer;
 
-use crate::ui::framestate::FileAction;
+use crate::ui::framestate::{AudioSettings, FileAction, VideoSettings};
 
 use super::*;
 
@@ -28,6 +28,10 @@ pub fn nes_loop(mut ctx: Box<AppCtx>) -> Result<(), Box<dyn Error>> {
     let mut selected_palette = 0;
     let mut palettes = [[[0u8; 4]; 4]; 8];
     let mut fps10_draw_ctrl = 0;
+    let mut hide_or = false;
+
+    // APU
+    let mut audio_volume = 1.0f32;
 
     // log
     let mut log = false;
@@ -121,9 +125,15 @@ pub fn nes_loop(mut ctx: Box<AppCtx>) -> Result<(), Box<dyn Error>> {
             }
         }
 
-        let mut fs = FrameState {
+        let mut st = FrameState {
             dev_mode,
             show_press_start_msg: !ctx.nes.ppu.screen_not_null(),
+            video: VideoSettings {
+                hide_overscan_region: hide_or
+            },
+            audio: AudioSettings {
+                volume: audio_volume
+            },
             file_action: FileAction::None,
             memory_editor: MemEdit {
                 paged_changed: false,
@@ -202,20 +212,26 @@ pub fn nes_loop(mut ctx: Box<AppCtx>) -> Result<(), Box<dyn Error>> {
                 .raylib_handle()
                 .set_window_title(ctx.ui.raylib_thread(), &title);
 
-            fs = ctx.ui.update(fs);
+            st = ctx.ui.update(st);
+
+            audio_volume = st.audio.volume;
+            ctx.nes.apu.set_volume(audio_volume);
+
+            hide_or = st.video.hide_overscan_region;
+            ctx.nes.ppu.options.hide_overscan_region = hide_or;
 
             if !current_frame_drawn {
                 t0g = Instant::now();
             }
             current_frame_drawn = true;
 
-            ctx.breakpoint = fs.dissasembly.bkpt;
+            ctx.breakpoint = st.dissasembly.bkpt;
             bkpt = ctx.breakpoint;
-            if let Some((a, v)) = fs.memory_editor.modify_byte {
+            if let Some((a, v)) = st.memory_editor.modify_byte {
                 ctx.nes.write(a, v)?;
             }
 
-            match &fs.file_action {
+            match &st.file_action {
                 FileAction::LoadROM(path) => { ctx.nes.swap_rom(path)?; ctx.nes.reset()?; },
                 FileAction::LoadSRAM(path) => { ctx.nes.try_load_save_file(Some(path))?; },
                 FileAction::StoreSRAM => { ctx.nes.try_store_save_file(None)?; }
@@ -234,7 +250,7 @@ pub fn nes_loop(mut ctx: Box<AppCtx>) -> Result<(), Box<dyn Error>> {
                 _ => {}
             }
 
-            pfs = PersistentFrameState::save_persistent_info(fs);
+            pfs = PersistentFrameState::save_persistent_info(st);
         } else {
             std::thread::yield_now();
         }

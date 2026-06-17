@@ -3,7 +3,7 @@ use std::fmt::Write;
 use imgui::{FontId, StyleColor, StyleVar, WindowFlags, sys::ImGuiCond_FirstUseEver};
 use log::info;
 use raylib::{
-    audio::{AudioStream, RaylibAudio}, color::Color, core::{RaylibHandle, RaylibThread}, drawing::{RaylibDraw, RaylibTextureModeExt}, ffi::{IsAudioStreamProcessed, LoadAudioStream, PlayAudioStream, SetAudioStreamBufferSizeDefault, SetWindowIcon, UpdateAudioStream}, texture::{Image, RaylibRenderTexture2D, RaylibTexture2D, RenderTexture2D}
+    audio::{AudioStream, RaylibAudio}, color::Color, core::{RaylibHandle, RaylibThread}, drawing::{RaylibDraw, RaylibTextureModeExt}, ffi::{GuiDefaultProperty::BACKGROUND_COLOR, IsAudioStreamProcessed, LoadAudioStream, PlayAudioStream, SetAudioStreamBufferSizeDefault, SetWindowIcon, UpdateAudioStream}, texture::{Image, RaylibRenderTexture2D, RaylibTexture2D, RenderTexture2D}
 };
 use raylib_imgui_rs::Renderer;
 
@@ -341,68 +341,91 @@ impl AppUI {
         // }
         let ui = self.ctx.new_frame();
 
+        { let window_size = ui.window_size();
+            let _t = ui.push_style_color(StyleColor::PopupBg, self.theme.bg);
+            let _t1 = ui.push_style_color(StyleColor::MenuBarBg, self.theme.bg);
+            let _t2 = ui.push_style_color(StyleColor::Text, self.theme.value);
+            let _t3 = ui.push_style_color(StyleColor::TextDisabled, self.theme.label);
+            let _t4 = ui.push_style_var(StyleVar::GrabRounding(12.0));
+            let _t5 = ui.push_style_var(StyleVar::GrabMinSize(12.0));
+            let _t6 = ui.push_style_color(StyleColor::SliderGrab, self.theme.highlight);
+            let _t7 = ui.push_style_color(StyleColor::SliderGrabActive, self.theme.highlight);
+            let _t8 = ui.push_style_color(StyleColor::FrameBg, self.theme.darker_bg);
+            let mut dimmer_highlight = self.theme.highlight;
+            dimmer_highlight[3] = 0.1;
+            let _t9 = ui.push_style_color(StyleColor::FrameBgHovered, dimmer_highlight);
+            dimmer_highlight[3] = 0.5;
+            let _t10 = ui.push_style_color(StyleColor::FrameBgActive, dimmer_highlight);
+            if let Some(_menu_bar) = ui.begin_main_menu_bar() {
+            // 2. The "File" Dropdown (Save States, Loading, Exiting)
+                if let Some(_menu_file) = ui.begin_menu("File") {
+                    if ui.menu_item("Switch ROM...") {
+                        match load_rom_dialog() {
+                            Some(path) => st.file_action = FileAction::LoadROM(path),
+                            None => st.file_action = FileAction::None,
+                        }
+                    }
+                    
+                    ui.separator(); // Draws a nice clean dividing line
 
-        if let Some(_menu_bar) = ui.begin_main_menu_bar() {
-        // 2. The "File" Dropdown (Save States, Loading, Exiting)
-            if let Some(_menu_file) = ui.begin_menu("File") {
-                if ui.menu_item("Switch ROM...") {
-                    match load_rom_dialog() {
-                        Some(path) => st.file_action = FileAction::LoadROM(path),
-                        None => st.file_action = FileAction::None,
+                    // Save State Sub-items
+                    if ui.menu_item_config("Save game progress").shortcut("Ctrl+S").build() {
+                    st.file_action = FileAction::StoreSRAM
+                    }
+                    if ui.menu_item_config("Load game progress").shortcut("Ctrl+O").build() {
+                        match load_sram_dialog() {
+                            Some(path) => st.file_action = FileAction::LoadSRAM(path),
+                            None => st.file_action = FileAction::None,
+                        }
+                    }
+
+                    ui.separator();
+
+                    if ui.menu_item_config("Capture emulator state").shortcut("Ctrl+Shift+S").build() {
+                        match store_emu_snapshot_dialog() {
+                            Some(path) => st.file_action = FileAction::TakeSnapshot(path),
+                            None => st.file_action = FileAction::None,
+                        }
+                    }
+
+                    if ui.menu_item_config("Load emulator capture.").shortcut("Ctrl+Shift+O").build() {
+                        match load_emu_snapshot_dialog() {
+                            Some(path) => st.file_action = FileAction::LoadSnapshot(path),
+                            None => st.file_action = FileAction::None,
+                        }
+                    }
+
+                    ui.separator();
+
+                    if ui.menu_item("Exit") {
+                        std::process::exit(0);
                     }
                 }
-                
-                ui.separator(); // Draws a nice clean dividing line
 
-                // Save State Sub-items
-                if ui.menu_item_config("Save game progress").shortcut("Ctrl+S").build() {
-                   st.file_action = FileAction::StoreSRAM
-                }
-                if ui.menu_item_config("Load game progress").shortcut("Ctrl+O").build() {
-                    match load_sram_dialog() {
-                        Some(path) => st.file_action = FileAction::LoadSRAM(path),
-                        None => st.file_action = FileAction::None,
+                // 3. The "Config" Dropdown (Controls, Audio, Emulation Speed)
+                if let Some(_menu_config) = ui.begin_menu("Video") {
+                    if ui.menu_item_config("Crop Overscan")
+                        .selected(st.video.hide_overscan_region)
+                        .build() 
+                    {
+                        st.video.hide_overscan_region ^= true;
                     }
                 }
 
-                ui.separator();
-
-                if ui.menu_item_config("Capture emulator state").shortcut("Ctrl+Shift+S").build() {
-                    match store_emu_snapshot_dialog() {
-                        Some(path) => st.file_action = FileAction::TakeSnapshot(path),
-                        None => st.file_action = FileAction::None,
-                    }
+                if let Some(_menu_audio) = ui.begin_menu("Audio") {
+                    ui.text_colored(self.theme.value, "Master Volume");
+                    let _g = ui.push_item_width(window_size[0] * 0.5);
+                    let mut volume = (st.audio.volume * 100.0) as i32;
+                    let _ = ui.slider_config("##volume", 0, 100).display_format("%d").build(&mut volume);
+                    st.audio.volume = (volume as f32) / 100.0;
                 }
 
-                if ui.menu_item_config("Load emulator capture.").shortcut("Ctrl+Shift+O").build() {
-                    match load_emu_snapshot_dialog() {
-                        Some(path) => st.file_action = FileAction::LoadSnapshot(path),
-                        None => st.file_action = FileAction::None,
-                    }
+                // 4. The "Window" Dropdown (Toggle Debuggers, PPU Viewer, Log Windows)
+                if let Some(_menu_window) = ui.begin_menu("Window") {
+                    // You can use mutable booleans here to toggle sub-windows on/off!
+                    // ui.checkbox("Show PPU Viewer", &mut my_state.show_ppu_viewer);
+                    // ui.checkbox("Show CPU Debugger", &mut my_state.show_cpu_debugger);
                 }
-
-                ui.separator();
-
-                if ui.menu_item("Exit") {
-                    std::process::exit(0);
-                }
-            }
-
-            // 3. The "Config" Dropdown (Controls, Audio, Emulation Speed)
-            if let Some(_menu_config) = ui.begin_menu("Config") {
-                if ui.menu_item("Input Settings...") {
-                    // TODO: Open a pop-up window to remap controllers
-                }
-                if ui.menu_item("Audio Volume...") {
-                    // TODO: Open audio adjustment overlay
-                }
-            }
-
-            // 4. The "Window" Dropdown (Toggle Debuggers, PPU Viewer, Log Windows)
-            if let Some(_menu_window) = ui.begin_menu("Window") {
-                // You can use mutable booleans here to toggle sub-windows on/off!
-                // ui.checkbox("Show PPU Viewer", &mut my_state.show_ppu_viewer);
-                // ui.checkbox("Show CPU Debugger", &mut my_state.show_cpu_debugger);
             }
         }
 
@@ -456,7 +479,7 @@ impl AppUI {
                     ui.set_window_font_scale(1.0);
                 }
 
-                let content_size = ui.content_region_avail();
+                let content_size = ui.window_size();
                 let nes_aspect = 256.0 / 240.0;
                 let window_aspect = content_size[0] / content_size[1];
 

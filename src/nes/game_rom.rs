@@ -122,7 +122,8 @@ fn create_mapper(
         ))),
         1 => Ok(Box::new(MMC1::new(
             prg_rom,
-            chr_rom
+            chr_rom,
+            battery_backed
         ))),
         4 => Ok(Box::new(MMC3::new(
             prg_rom,

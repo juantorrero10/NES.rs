@@ -9,7 +9,9 @@ pub struct FrameState<'a> {
     pub dissasembly: Dissassebly<'a>,
     pub memory_editor: MemEdit<'a>,
     pub ppu_info: PpuInfo<'a>,
-    pub file_action: FileAction
+    pub file_action: FileAction,
+    pub audio: AudioSettings,
+    pub video: VideoSettings
 }
 
 pub enum FileAction {
@@ -19,6 +21,14 @@ pub enum FileAction {
     StoreSRAM,
     TakeSnapshot(OsString),
     LoadSnapshot(OsString),
+}
+
+pub struct AudioSettings {
+    pub volume: f32,
+}
+
+pub struct VideoSettings {
+    pub hide_overscan_region: bool,
 }
 
 

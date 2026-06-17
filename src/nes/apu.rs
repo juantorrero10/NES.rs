@@ -33,6 +33,8 @@ pub struct Apu {
 
     hpf90: HighPassFilter,
     lpf19k: LowPassFilter,
+
+    volume_multiplier: f32
 }
 
 #[derive(Default, Clone, Copy)]
@@ -195,12 +197,17 @@ impl Apu {
             triangle_ch: TriangleWaveChannel::default(),
             noise_ch: NoiseChannel::default(),
             dmc_ch: DmcChannel::default(),
+            volume_multiplier: 1.0,
 
             irq_pending: false,
 
             hpf90: HighPassFilter::new(sample_rate, 90.0),
             lpf19k: LowPassFilter::new(sample_rate, 19000.0),
         }
+    }
+
+    pub fn set_volume(&mut self, v: f32) {
+        self.volume_multiplier = v;
     }
 
     pub fn reset(&mut self) {
@@ -308,6 +315,8 @@ impl Apu {
 
         // Make-up gain
         filtered *= 3.0;
+
+        filtered *= self.volume_multiplier;
 
         // Push down to the lockless consumer buffer
         let _ = self.producer.try_push(filtered);

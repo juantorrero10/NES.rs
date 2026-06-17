@@ -11,7 +11,9 @@ const CHR_WINDOW_SIZE: u16 = 0x2000;
 pub struct MMC1 {
     prg_rom: Vec<u8>,
     prg_ram: Vec<u8>,
-    chr_rom: Vec<u8>,
+    chr_data: Vec<u8>,
+
+    is_chr_ram: bool,
 
     control: u8,
 
@@ -20,19 +22,28 @@ pub struct MMC1 {
     chr_bank_hi: u8,
 
     shift_register: u8,
+
+    is_battery_backed: bool
 }
 
 impl MMC1 {
-    pub fn new(prg_rom: Vec<u8>, chr_rom: Vec<u8>) -> Self {
+    pub fn new(prg_rom: Vec<u8>, mut chr_data: Vec<u8>, is_battery_backed: bool) -> Self {
+        let mut is_chr_ram = false;
+        if chr_data.len() == 0 {
+            chr_data = vec![0u8; 8192];
+            is_chr_ram = true;
+        }
         MMC1 {
-            chr_rom,
+            chr_data,
             prg_rom,
+            is_chr_ram,
             prg_ram: vec![0u8; 8192],
             shift_register: 0b10000,
             prg_bank: 0,
             control: 0x0C,
             chr_bank_lo: 0,
             chr_bank_hi: 0,
+            is_battery_backed
         }
     }
 
@@ -120,7 +131,7 @@ impl Mapper for MMC1 {
     }
 
     fn get_snapshot_size(&self) -> usize {
-        size_of::<Self>() + self.prg_ram.len() + self.prg_rom.len() + self.chr_rom.len()
+        size_of::<Self>() + self.prg_ram.len() + self.prg_rom.len() + self.chr_data.len()
     }
 
     fn take_snapshot(&self, buff: &mut [u8]) -> Result<(), postcard::Error> {
@@ -137,6 +148,27 @@ impl Mapper for MMC1 {
         addr < ADDR_NAME_START
     }
 
+    fn is_sram_battery_backed(&self) -> bool {
+        self.is_battery_backed
+    }
+
+    fn save_sram(&self) -> Option<&[u8]> {
+        Some(&self.prg_ram)
+    }
+
+    fn load_sram(&mut self, buff: &[u8]) {
+        if self.prg_ram.len() != buff.len() {
+            log::error!(
+                "Tried to load sram to mapper but sizes doesnt match: len(prg_ram): {} != len(file_buff): {}.",
+                self.prg_ram.len(),
+                buff.len()
+            );
+            return;
+        }
+
+        self.prg_ram.copy_from_slice(buff);
+    }
+
     fn ppu_intercept<'a>(
         &'a mut self,
         addr: u16,
@@ -145,7 +177,7 @@ impl Mapper for MMC1 {
         write: bool,
     ) -> crate::nes::ppu::BusPpuTarget<'a>
     {
-        if write {
+        if write && !self.is_chr_ram {
             return BusPpuTarget::OpenBus;
         }
 
@@ -158,13 +190,13 @@ impl Mapper for MMC1 {
             } else {
                 ((self.chr_bank_lo as u16 & 0x1f) * (CHR_WINDOW_SIZE / 2)) + addr
             };
-            let target_offset = target_offset as usize % self.chr_rom.len();
-            return BusPpuTarget::Memory(&mut self.chr_rom[target_offset]);
+            let target_offset = target_offset as usize % self.chr_data.len();
+            return BusPpuTarget::Memory(&mut self.chr_data[target_offset]);
         }
         // One bank of 8Kib
         let mut target_offset = ((self.chr_bank_lo as usize & !1) * CHR_WINDOW_SIZE as usize) + addr as usize;
-        target_offset %= self.chr_rom.len();
-        BusPpuTarget::Memory(&mut self.chr_rom[target_offset])
+        target_offset %= self.chr_data.len();
+        BusPpuTarget::Memory(&mut self.chr_data[target_offset])
     }
 
     fn mirroring(&self) -> PpuNameTblMirroring {
