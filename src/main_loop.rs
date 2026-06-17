@@ -1,8 +1,8 @@
 use std::{
-    ffi::c_void,
-    sync::atomic::{AtomicPtr, Ordering},
+    ffi::c_void, sync::atomic::{AtomicPtr, Ordering}, time::Duration
 };
 
+use imgui::ColorFormat::Float;
 use raylib::ffi::SetAudioStreamCallback;
 use ringbuf::traits::Consumer;
 
@@ -45,8 +45,8 @@ pub fn nes_loop(mut ctx: Box<AppCtx>) -> Result<(), Box<dyn Error>> {
 
     let mut ppu_regs = String::with_capacity(128);
 
-    let mut micros_since_last_frame;
-    let mut micros_since_last_gameframe;
+    let mut nanos_since_last_frame;
+    let mut nanos_since_last_gameframe;
 
     let mut current_frame_drawn = false;
 
@@ -151,8 +151,8 @@ pub fn nes_loop(mut ctx: Box<AppCtx>) -> Result<(), Box<dyn Error>> {
             },
         };
 
-        micros_since_last_frame = t0.elapsed().as_micros();
-        micros_since_last_gameframe = t0g.elapsed().as_micros();
+        nanos_since_last_frame = t0.elapsed().as_nanos();
+        nanos_since_last_gameframe = t0g.elapsed().as_nanos();
         // micros_since_last_game_frame = t0_game.elapsed().as_micros();
 
         // log::info!("Time last frame: {}", micros_since_last_frame as f64 / 1_000_000.0);
@@ -163,10 +163,11 @@ pub fn nes_loop(mut ctx: Box<AppCtx>) -> Result<(), Box<dyn Error>> {
             }
         }*/
 
-        if micros_since_last_frame >= FPS60_ELAPSED {
+        if nanos_since_last_frame >= FPS60_ELAPSED {
+            t0 += Duration::from_nanos(FPS60_ELAPSED as u64);
             handle_keys(&mut ctx, &mut step_instruction, &mut dev_mode, &mut selected_palette, &mut frame_has_changed, &mut fps10_draw_ctrl, &mut toggle_mapper)?;
             // log::info!("New frame");
-            let us = micros_since_last_frame as f64;
+            let us = nanos_since_last_frame as f64;
             // if false {
             //     log::info!(
             //         "FPS: {}, Delay: {} ms, New frame? {}",
@@ -175,21 +176,20 @@ pub fn nes_loop(mut ctx: Box<AppCtx>) -> Result<(), Box<dyn Error>> {
             //         new_frame_generated
             //     );
             // }
-            if !current_frame_drawn {
-                t0g = Instant::now();
-            }
-            current_frame_drawn = true;
+            
             title.clear();
             let version_tag;
             version_tag = match cfg!(debug_assertions) {
                 true => "Debug",
                 false => "Release",
             };
+            let mut fps = 100000000000.0f64;
             if ctx.is_running.load(Ordering::Acquire) {
+                fps = 1_000_000_000.0 / (nanos_since_last_gameframe as f64);
                 let _ = write!(
                     title,
                     "ShittyEmu.rs [{version_tag}] (FPS:{:.2})",
-                    (1_000_000.0 / (micros_since_last_gameframe as f64))
+                    (fps)
                 );
             } else {
                 let _ = write!(
@@ -204,10 +204,13 @@ pub fn nes_loop(mut ctx: Box<AppCtx>) -> Result<(), Box<dyn Error>> {
 
             fs = ctx.ui.update(fs);
 
-            
-            t0 = Instant::now();
+            if !current_frame_drawn {
+                t0g = Instant::now();
+            }
+            current_frame_drawn = true;
 
-            bkpt = fs.dissasembly.bkpt;
+            ctx.breakpoint = fs.dissasembly.bkpt;
+            bkpt = ctx.breakpoint;
             if let Some((a, v)) = fs.memory_editor.modify_byte {
                 ctx.nes.write(a, v)?;
             }
@@ -233,7 +236,7 @@ pub fn nes_loop(mut ctx: Box<AppCtx>) -> Result<(), Box<dyn Error>> {
 
             pfs = PersistentFrameState::save_persistent_info(fs);
         } else {
-            // std::hint::spin_loop();
+            std::thread::yield_now();
         }
 
         // real_time = false;
@@ -304,7 +307,7 @@ fn handle_keys(
 }
 
 pub const AUDIO_BUFFER_SIZE: usize = 727;
-pub const FPS60_ELAPSED: u128 = 16667;
+pub const FPS60_ELAPSED: u128 = 16639267;
 pub const EMU_SAMPLE_RATE: u32 = 43653;
 
 unsafe extern "C" fn nes_audio_callback(buffer: *mut c_void, sample_count: u32) {
@@ -332,6 +335,14 @@ unsafe extern "C" fn nes_audio_callback(buffer: *mut c_void, sample_count: u32) 
     let mut timeout = 0;
     while n_sample < sample_count && timeout < sample_count * 10 {
         ctx.nes.clock(None).expect("Failure during nes clock");
+
+        if let Some(b) = ctx.breakpoint {
+            if ctx.nes.cpu.registers.pc == b {
+                ctx.is_running.store(false, Ordering::Release);
+                out_buffer[n_sample..].fill(0.0);
+                break;
+            }
+        }
 
         if let Some(sample) = ctx.audio_consumer.try_pop() {
             out_buffer[n_sample] = sample;

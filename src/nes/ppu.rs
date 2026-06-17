@@ -5,7 +5,7 @@ use thiserror::Error;
 use crate::{nes::{
     Nes,
     bus_cpu::BusCpuError,
-    game_rom::MemoryMirroring,
+    game_rom::PpuNameTblMirroring,
     mappers::Mapper,
     ppu::{
         BusPpuTarget::{Memory, OpenBus},
@@ -84,23 +84,28 @@ impl BusPpu {
                 let name_table_idx = addr_byte / 0x400;
                 addr_byte &= (SIZE_NAME_TBL as u16) - 1;
                 addr_byte += match mapper.mirroring() {
-                    MemoryMirroring::Vertical => match name_table_idx {
+                    PpuNameTblMirroring::Vertical => match name_table_idx {
                         0 => 0,
                         1 => 0x400,
                         2 => 0,
                         3 => 0x400,
                         _ => unreachable!(),
                     },
-                    MemoryMirroring::Horizontal => match name_table_idx {
+                    PpuNameTblMirroring::Horizontal => match name_table_idx {
                         0 => 0,
                         1 => 0,
                         2 => 0x400,
                         3 => 0x400,
                         _ => panic!("{} {} {}", name_table_idx, addr_byte, addr),
                     },
-                    _ => {
-                        panic!("Mirroring not implemented: {:?}", mapper.mirroring())
-                    }
+                    PpuNameTblMirroring::OnScreenLO => match name_table_idx {
+                        0 | 1 | 2 | 3 => 0,
+                        _ => unreachable!(),
+                    },
+                    PpuNameTblMirroring::OnScreenHI => match name_table_idx {
+                        0 | 1 | 2 | 3 => 0x400,
+                        _ => unreachable!(),
+                    },
                 };
                 return Memory(self.chips.nametables.get_mut(addr_byte as usize).unwrap());
             }
@@ -332,7 +337,7 @@ type Result<T> = std::result::Result<T, PpuError>;
 // Main renderring implementation block
 impl Ppu {
     pub fn clock(&mut self, nes: *mut Nes, mapper: &mut Box<dyn Mapper>) {
-        if let Some(e) = mapper.on_ppu_clock() {
+        if let Some(e) = mapper.on_ppu_clock(nes) {
             let instance = unsafe { nes.as_mut().unwrap() };
             instance
                 .trigger_event(e)

@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::{nes::game_rom::PpuNameTblMirroring, ui::framestate::PpuInfo};
+
 use super::*;
 
 macro_rules! rom {
@@ -21,24 +23,24 @@ macro_rules! ppu_rom {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
-pub struct MMC0 {
+pub struct NROM {
     prg_ram: Vec<u8>,
     prg_rom: Vec<u8>,
     chr_rom: Vec<u8>,
-    mirroring: MemoryMirroring,
+    mirroring: PpuNameTblMirroring,
 }
 
-impl MMC0 {
+impl NROM {
     pub fn new(
         prg_rom: Vec<u8>,
         mut prg_ram_size: usize,
         chr_rom: Vec<u8>,
-        mirroring: MemoryMirroring,
+        mirroring: PpuNameTblMirroring,
     ) -> Self {
         if prg_ram_size == 0 {
             prg_ram_size = 8192;
         }
-        MMC0 {
+        NROM {
             prg_rom,
             chr_rom,
             prg_ram: vec![0u8; prg_ram_size],
@@ -47,7 +49,7 @@ impl MMC0 {
     }
 }
 
-impl Mapper for MMC0 {
+impl Mapper for NROM {
     fn cpu_need_intercept(&mut self, addr: u16) -> bool {
         return addr >= 0x6000;
     }
@@ -87,7 +89,7 @@ impl Mapper for MMC0 {
         ppu_rom!(self, write, &mut self.chr_rom[addr as usize])
     }
 
-    fn mirroring(&self) -> MemoryMirroring {
+    fn mirroring(&self) -> PpuNameTblMirroring {
         self.mirroring
     }
 

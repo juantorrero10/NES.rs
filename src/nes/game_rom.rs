@@ -5,7 +5,7 @@ const NES_MAGIC: u32 = 0x1a53454e; // "NES\x1a"
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-pub enum MemoryMirroring {
+pub enum PpuNameTblMirroring {
     Horizontal,
     Vertical,
     OnScreenLO,
@@ -52,8 +52,7 @@ use thiserror::Error;
 
 use crate::nes::{
     game_rom::ROMErr::MapperNotImplemented,
-    mappers::Mapper,
-    mappers::{mmc0::MMC0, mmc3::MMC3},
+    mappers::{Mapper, mmc1::MMC1, mmc3::MMC3, nrom::NROM},
 };
 
 pub fn load_rom(filepath: &OsString) -> Result<(u8, Box<dyn Mapper>)> {
@@ -74,9 +73,9 @@ pub fn load_rom(filepath: &OsString) -> Result<(u8, Box<dyn Mapper>)> {
     }
     let mapper_id = (header.flag6 >> 4) | (header.flag7 & 0x0F);
     let mirror = if (header.flag6 & 1) != 0 {
-        MemoryMirroring::Vertical
+        PpuNameTblMirroring::Vertical
     } else {
-        MemoryMirroring::Horizontal
+        PpuNameTblMirroring::Horizontal
     };
     log::info!("Mapper_id: {mapper_id}");
     log::info!("Mirroring: {mirror:?}");
@@ -111,15 +110,19 @@ fn create_mapper(
     prg_ram_size: usize,
     prg_rom: Vec<u8>,
     chr_rom: Vec<u8>,
-    mirroring: MemoryMirroring,
+    mirroring: PpuNameTblMirroring,
     battery_backed: bool,
 ) -> Result<Box<dyn Mapper>> {
     match mapper_id {
-        0 => Ok(Box::new(MMC0::new(
+        0 => Ok(Box::new(NROM::new(
             prg_rom,
             prg_ram_size,
             chr_rom,
-            mirroring,
+            mirroring
+        ))),
+        1 => Ok(Box::new(MMC1::new(
+            prg_rom,
+            chr_rom
         ))),
         4 => Ok(Box::new(MMC3::new(
             prg_rom,
@@ -137,7 +140,8 @@ pub fn create_mapper_from_snapshot(
     snap: &[u8],
 ) -> Result<Box<dyn Mapper>> {
     match id {
-        0 => Ok(Box::new({ let m: MMC0 = postcard::from_bytes(snap)?; m })),
+        0 => Ok(Box::new({ let m: NROM = postcard::from_bytes(snap)?; m })),
+        1 => Ok(Box::new({ let m: MMC1 = postcard::from_bytes(snap)?; m })),
         4 => Ok(Box::new({ let m: MMC3 = postcard::from_bytes(snap)?; m })),
         _ => Err(MapperNotImplemented(id))
     }

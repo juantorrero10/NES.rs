@@ -2,7 +2,7 @@ use std::fmt::Write;
 
 use serde::{Deserialize, Serialize};
 
-use crate::nes::{MapperInfoReq, NesEvent};
+use crate::nes::{NesEvent};
 
 use super::*;
 
@@ -30,7 +30,7 @@ pub struct MMC3 {
     prg_offsets: [usize; 4], // Offsets for the four 8KB PRG windows
     chr_offsets: [usize; 8], // Offsets for the eight 1KB CHR windows
 
-    mirroring: MemoryMirroring,
+    mirroring: PpuNameTblMirroring,
 
     last_ppu_addr: u16,
     a12_filter: u8,
@@ -53,7 +53,7 @@ impl MMC3 {
         prg_rom: Vec<u8>,
         mut prg_ram_size: usize,
         chr_rom: Vec<u8>,
-        mirroring: MemoryMirroring,
+        mirroring: PpuNameTblMirroring,
         battery_backed: bool,
     ) -> Self {
         if prg_ram_size == 0 {
@@ -120,8 +120,8 @@ impl MMC3 {
                 if !is_odd {
                     // let m = self.mirroring;
                     self.mirroring = match data & 1 {
-                        0 => MemoryMirroring::Vertical,
-                        1 => MemoryMirroring::Horizontal,
+                        0 => PpuNameTblMirroring::Vertical,
+                        1 => PpuNameTblMirroring::Horizontal,
                         _ => unreachable!(),
                     };
                     // log::indo!("MIRRORING {:?} -> {:?}", m, self.mirroring);
@@ -200,7 +200,7 @@ impl Mapper for MMC3 {
     fn irq_clear(&mut self) {
         self.irq_is_pending = false;
     }
-    fn mirroring(&self) -> MemoryMirroring {
+    fn mirroring(&self) -> PpuNameTblMirroring {
         self.mirroring
     }
 
@@ -287,27 +287,19 @@ impl Mapper for MMC3 {
         addr < 0x2000
     }
 
-    #[allow(unreachable_patterns)]
-    fn info_request_response(&mut self, i: crate::nes::MapperInfoReq, data_back: Option<u64>) {
-        match i {
-            MapperInfoReq::PpuAddressBus => {}
-            _ => return,
-        }
-        if let Some(info_back) = data_back {
-            let address_bus = (info_back & 0xFFFF) as u16;
-            // This happens on cpu clock
-            // log::info!("-- Cpu Clock: addr_bus: {:04X}", ppu_address_bus);
-            // log::info!("address_bus: {:014b} prev_address_bus: {:014b}", address_bus, prev_address_bus);
-            if (address_bus & 0x1000) == 0 && self.a12_filter < 3 {
-                // log::info!("Filter + 1, {}", self.a12_filter);
-                self.a12_filter += 1;
-            }
-        }
-    }
 
-    fn on_cpu_clock(&mut self) -> Option<NesEvent> {
+    fn on_cpu_clock(&mut self, nes: *mut Nes) -> Option<NesEvent> {
         // Request PPU address bus
-        Some(NesEvent::InfoReq(MapperInfoReq::PpuAddressBus))
+        let nes =  unsafe { nes.as_ref().unwrap() };
+        let address_bus = (nes.bus_ppu.address_bus & 0xFFFF) as u16;
+        // This happens on cpu clock
+        // log::info!("-- Cpu Clock: addr_bus: {:04X}", ppu_address_bus);
+        // log::info!("address_bus: {:014b} prev_address_bus: {:014b}", address_bus, prev_address_bus);
+        if (address_bus & 0x1000) == 0 && self.a12_filter < 3 {
+            // log::info!("Filter + 1, {}", self.a12_filter);
+            self.a12_filter += 1;
+        }
+        None
     }
 
     fn is_sram_battery_backed(&self) -> bool {

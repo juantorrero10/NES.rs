@@ -309,7 +309,6 @@ pub enum NesEvent {
     ControllerWrittenTo(u8),
     ApuWrittenTo(u16, u8),
     ApuReadFrom(u16),
-    InfoReq(MapperInfoReq),
 }
 
 #[derive(Debug)]
@@ -345,16 +344,6 @@ impl Nes {
                 }
                 self.ppu
                     .event_oam_dma_transfer(self.oam_dma_buffer.as_slice())?;
-                Ok(None)
-            }
-            NesEvent::InfoReq(i) => {
-                match i {
-                    MapperInfoReq::PpuAddressBus => {
-                        // log::info!("Info request: \n\tPrev: {:014b}\n\tCurr: {:014b}", self.bus_ppu.prev_address_bus, self.bus_ppu.address_bus);
-                        let response = self.bus_ppu.address_bus as u64;
-                        self.mapper.info_request_response(i, Some(response));
-                    }
-                }
                 Ok(None)
             }
             NesEvent::PpuRegReadFrom(r) => Ok(Some(self.ppu.event_cpu_has_read(r, instance)?)),

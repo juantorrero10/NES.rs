@@ -1,11 +1,13 @@
+use serde::Serialize;
+
 use crate::nes::{
-    bus_cpu::{BusCpuChips, BusCpuTarget},
-    game_rom::MemoryMirroring,
-    ppu::{ADDR_CHR_END, BusPpuChips, BusPpuTarget},
+    Nes, bus_cpu::{BusCpuChips, BusCpuTarget}, ppu::{ADDR_CHR_END, BusPpuChips, BusPpuTarget},
+    game_rom::PpuNameTblMirroring
 };
 
-pub mod mmc0;
+pub mod nrom;
 pub mod mmc3;
+pub mod mmc1;
 
 use crate::nes::{MapperInfoReq, NesEvent};
 
@@ -17,10 +19,10 @@ pub trait Mapper{
         addr: u16,
         chips: &'a mut BusCpuChips,
         data: u8,
-        write: bool,
+        write: bool,    
     ) -> BusCpuTarget<'a>;
 
-    fn on_cpu_clock(&mut self) -> Option<NesEvent> {
+    fn on_cpu_clock(&mut self, _nes: *mut Nes) -> Option<NesEvent> {
         None
     }
 
@@ -40,13 +42,13 @@ pub trait Mapper{
         write: bool,
     ) -> BusPpuTarget<'a>;
 
-    fn on_ppu_clock(&mut self) -> Option<NesEvent> {
+    fn on_ppu_clock(&mut self, _nes: *mut Nes) -> Option<NesEvent> {
         None
     }
 
-    fn mirroring(&self) -> MemoryMirroring;
+    fn mirroring(&self) -> PpuNameTblMirroring;
 
-    fn info_request_response(&mut self, _i: MapperInfoReq, _data_back: Option<u64>) {}
+    //fn info_request_response(&mut self, _i: MapperInfoReq, _data_back: Option<u64>) {}
 
     fn debug_information(&self, _out: &mut String) -> bool {
         false
