@@ -92,6 +92,7 @@ pub struct AppCtx {
     ui: AppUI,
     nes: Nes,
     audio_consumer: AudioConsumer,
+    step_instruction: AtomicBool,
     is_running: AtomicBool,
     update_info: AtomicBool,
     breakpoint: Option<u16>,
@@ -165,8 +166,10 @@ fn nes_init() -> Result<Box<AppCtx>, NesError> {
         audio_consumer: rx,
         is_running: AtomicBool::new(false),
         update_info: AtomicBool::new(false),
+        step_instruction: AtomicBool::new(false),
         breakpoint: None,
     });
+    std::env::set_current_dir(get_correct_cwd()).expect("Could not set the correct CWD");
     nes_ctx.nes.try_load_save_file(None)?;
     nes_ctx.nes.reset()?;
     Ok(nes_ctx)
@@ -225,8 +228,6 @@ fn get_correct_cwd() -> PathBuf {
 fn main() {
     #[cfg(target_os = "windows")]
     attach_console();
-
-    std::env::set_current_dir(get_correct_cwd()).expect("Could not set the correct CWD");
 
     SimpleLogger::new()
     .with_level(log::LevelFilter::Info)

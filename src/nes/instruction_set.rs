@@ -384,7 +384,7 @@ pub static INSTRUCTION_LUT: [Instruction6502; 256] = {
     table[0xAE] = ins!("LDX", ldx, ABS, 4);
     table[0xBE] = ins!("LDX", ldx, ABY, 4);
 
-    table[0xA0] = ins!("LDX", ldy, IMM, 2);
+    table[0xA0] = ins!("LDY", ldy, IMM, 2);
     table[0xA4] = ins!("LDY", ldy, ZP0, 3);
     table[0xB4] = ins!("LDY", ldy, ZPX, 4);
     table[0xAC] = ins!("LDY", ldy, ABS, 4);

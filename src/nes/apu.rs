@@ -34,7 +34,16 @@ pub struct Apu {
     hpf90: HighPassFilter,
     lpf19k: LowPassFilter,
 
-    volume_multiplier: f32
+    pub options: ApuOptions,
+}
+
+pub struct ApuOptions {
+    pub volume_multiplier: f32,
+    pub pw1_mut: bool,
+    pub pw2_mut: bool,
+    pub trg_mut: bool,
+    pub nch_mut: bool,
+    pub dmc_mut: bool,
 }
 
 #[derive(Default, Clone, Copy)]
@@ -197,7 +206,14 @@ impl Apu {
             triangle_ch: TriangleWaveChannel::default(),
             noise_ch: NoiseChannel::default(),
             dmc_ch: DmcChannel::default(),
-            volume_multiplier: 1.0,
+            options: ApuOptions {
+                volume_multiplier: 1.0,
+                pw1_mut: false,
+                pw2_mut: false,
+                trg_mut: false,
+                nch_mut: false,
+                dmc_mut: false,
+            },
 
             irq_pending: false,
 
@@ -207,7 +223,7 @@ impl Apu {
     }
 
     pub fn set_volume(&mut self, v: f32) {
-        self.volume_multiplier = v;
+        self.options.volume_multiplier = v;
     }
 
     pub fn reset(&mut self) {
@@ -246,7 +262,7 @@ impl Apu {
                     self.linear_counter_update();
                     self.length_counter_update();
                     self.sweep_update();
-                },
+                }
                 29831 => {
                     self.envelope_update();
                     self.linear_counter_update();
@@ -263,14 +279,14 @@ impl Apu {
                 29832 => {
                     self.frame_counter = 0;
                 }
-            _ => {}
+                _ => {}
             }
         } else {
             match self.frame_counter {
                 7458 | 22372 => {
                     self.envelope_update();
                     self.linear_counter_update();
-                },
+                }
                 29831 => {}
                 14916 | 37282 => {
                     self.envelope_update();
@@ -292,11 +308,13 @@ impl Apu {
 
         self.cycle_accumulator -= self.cycles_per_sample;
 
-        let sample_p1 = self.digital_pulse_wave_sample(&self.pulse_wave_chs[0]);
-        let sample_p2 = self.digital_pulse_wave_sample(&self.pulse_wave_chs[1]);
-        let sample_t = self.digital_triangle_wave_sample();
-        let sample_n = self.digital_noise_sample();
-        let sample_d = self.dmc_ch.load_counter as f32;
+        let mut sample_p1 = self.digital_pulse_wave_sample(&self.pulse_wave_chs[0]);
+        let mut sample_p2 = self.digital_pulse_wave_sample(&self.pulse_wave_chs[1]);
+        let mut sample_t = self.digital_triangle_wave_sample();
+        let mut sample_n = self.digital_noise_sample();
+        let mut sample_d = self.dmc_ch.load_counter as f32;
+
+        self.apply_channel_options(&mut sample_p1, &mut sample_p2, &mut sample_t, &mut sample_n, &mut sample_d);
 
         // The sample produced at this stage is purely positive (DC-offset).
         // Very hard to work with since it will clip as soon as some gain is applied
@@ -316,10 +334,28 @@ impl Apu {
         // Make-up gain
         filtered *= 3.0;
 
-        filtered *= self.volume_multiplier;
+        filtered *= self.options.volume_multiplier;
 
         // Push down to the lockless consumer buffer
         let _ = self.producer.try_push(filtered);
+    }
+
+    fn apply_channel_options(&self, pw1: &mut f32, pw2: &mut f32, trg: &mut f32, nch: &mut f32, dmc: &mut f32) {
+        if self.options.pw1_mut {
+            *pw1 = 0.0;
+        }
+        if self.options.pw2_mut {
+            *pw2 = 0.0;
+        }
+        if self.options.trg_mut {
+            *trg = 0.0;
+        }
+        if self.options.nch_mut {
+            *nch = 0.0;
+        }
+        if self.options.dmc_mut {
+            *dmc = 0.0;
+        }
     }
 
     fn mix_samples(pw1: f32, pw2: f32, triangle: f32, noise: f32, dmc: f32) -> f32 {
@@ -434,7 +470,6 @@ impl Apu {
             }
 
             ch.sweep.countdown = ch.sweep.period + 1;
-
 
             let delta = (ch.timer_reload >> ch.sweep.shift) as i32;
 
@@ -732,7 +767,6 @@ impl Apu {
 
                 ch.timer_reload = DMC_PERIOD_LUT[(data & 0x0F) as usize];
 
-
                 if !ch.irq_enable {
                     ch.irq_signal = false;
                 }
@@ -807,7 +841,7 @@ impl Apu {
                 }
                 self.frame_irq_disable = (data & 0x40) != 0;
             }
-            _ => {}         
+            _ => {}
         }
     }
 
@@ -876,7 +910,7 @@ impl HighPassFilter {
         Self {
             coeff: rc / (rc + delta_time),
             prev_sample: 0.0,
-            prev_input: 0.0
+            prev_input: 0.0,
         }
     }
 

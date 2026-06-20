@@ -204,10 +204,6 @@ pub struct Ppu {
     pub scanline: isize,
     pub cycle: usize,
 
-    t0: Instant,
-    total: Instant,
-    n_frames: f64,
-
     screen_data_buffer0: Vec<u8>,
     screen_data_buffer1: Vec<u8>,
 
@@ -262,8 +258,8 @@ struct FGRegs {
 
 #[derive(Default)]
 struct VRAM {
-    addr: u16,
-    t_addr: u16,
+    v: u16,
+    t: u16,
     // Set Low: High byte, Set High: Low Byte
     latch: bool,
     delayed_data: u8,
@@ -502,7 +498,7 @@ impl Ppu {
             // Dummy NT reads
             337..=340 => {
                 let dummy_nt_addr = 0x2000
-                    | (self.vram.addr
+                    | (self.vram.v
                         & (VRAM_COARSE_X_MASK | VRAM_COARSE_Y_MASK | VRAM_NAMETABLE_MASK));
                 // Although the data is discarded, mappers can syncronize stuff in the reads
                 let _ = self.read(dummy_nt_addr, nes);
@@ -675,7 +671,7 @@ impl Ppu {
             // Name table read
             1 => {
                 let nt_addr = 0x2000
-                    | (self.vram.addr
+                    | (self.vram.v
                         & (VRAM_COARSE_X_MASK | VRAM_COARSE_Y_MASK | VRAM_NAMETABLE_MASK));
                 self.bg_regs.latch_name = self.read(nt_addr, nes)
             }
@@ -683,7 +679,7 @@ impl Ppu {
             // Attribute table read
             3 => {
                 // Grab attribute byte
-                let v = self.vram.addr;
+                let v = self.vram.v;
                 // VRAM_ADDR (15 bits) (y: Nametable Y, Y: Coarse Y), same with x
                 // _FFFyxYYYYYXXXXX
                 // Attribute address to read (14 bits)
@@ -718,7 +714,7 @@ impl Ppu {
                 } else {
                     0x0000
                 };
-                let fine_y = (self.vram.addr & VRAM_FINE_Y_MASK) >> 12;
+                let fine_y = (self.vram.v & VRAM_FINE_Y_MASK) >> 12;
                 let tile_id = self.bg_regs.latch_name as u16;
 
                 let pat_addr = pattern_table_base + (tile_id << 4) + fine_y;
@@ -822,22 +818,22 @@ impl Ppu {
     #[inline(always)]
     fn increment_scroll_y(&mut self) {
         // log::info!("inc vert(v) => SC: {}, CYC: {}", self.scanline, self.cycle);
-        let mut fine_y = (self.vram.addr & VRAM_FINE_Y_MASK) >> 12;
+        let mut fine_y = (self.vram.v & VRAM_FINE_Y_MASK) >> 12;
         fine_y += 1;
         if fine_y > 7 {
-            let mut coarse_y = (self.vram.addr & VRAM_COARSE_Y_MASK) >> 5;
+            let mut coarse_y = (self.vram.v & VRAM_COARSE_Y_MASK) >> 5;
             coarse_y += 1;
             if coarse_y > 29 {
                 if coarse_y == 30 {
                     // Flip Name table Y Bit
-                    self.vram.addr ^= VRAM_NAMETABLE_Y_MASK;
+                    self.vram.v ^= VRAM_NAMETABLE_Y_MASK;
                 }
                 coarse_y = 0;
             }
-            self.vram.addr = (self.vram.addr & !VRAM_COARSE_Y_MASK) | coarse_y << 5;
+            self.vram.v = (self.vram.v & !VRAM_COARSE_Y_MASK) | coarse_y << 5;
         }
         fine_y &= 0x7;
-        self.vram.addr = (self.vram.addr & !VRAM_FINE_Y_MASK) | fine_y << 12
+        self.vram.v = (self.vram.v & !VRAM_FINE_Y_MASK) | fine_y << 12
     }
 
     #[inline(always)]
@@ -845,7 +841,7 @@ impl Ppu {
         // log::info!("hori(v) =  hori(t) => SC: {}, CYC: {}", self.scanline, self.cycle);
         // Copy coarse x and nametable x
         let mask = VRAM_COARSE_X_MASK | VRAM_NAMETABLE_X_MASK;
-        self.vram.addr = (self.vram.addr & !mask) | (self.vram.t_addr & mask);
+        self.vram.v = (self.vram.v & !mask) | (self.vram.t & mask);
     }
 
     #[inline(always)]
@@ -853,21 +849,21 @@ impl Ppu {
         // log::info!("vert(v) =  vert(t) => SC: {}, CYC: {}", self.scanline, self.cycle);
         // copy scroll y nametable y and fine y
         let mask = VRAM_COARSE_Y_MASK | VRAM_NAMETABLE_Y_MASK | VRAM_FINE_Y_MASK;
-        self.vram.addr = (self.vram.addr & !mask) | (self.vram.t_addr & mask);
+        self.vram.v = (self.vram.v & !mask) | (self.vram.t & mask);
     }
 
     #[inline(always)]
     fn increment_scroll_x(&mut self) {
         //log::info!("inc hori(v) => SC: {}, CYC: {}", self.scanline, self.cycle);
-        let mut coarse_x = self.vram.addr & VRAM_COARSE_X_MASK;
+        let mut coarse_x = self.vram.v & VRAM_COARSE_X_MASK;
         coarse_x += 1;
         if coarse_x > 31 {
             coarse_x = 0;
             // Flip Name table X Bit
-            self.vram.addr ^= VRAM_NAMETABLE_X_MASK;
+            self.vram.v ^= VRAM_NAMETABLE_X_MASK;
         }
         coarse_x &= 0x1f;
-        self.vram.addr = (self.vram.addr & !VRAM_COARSE_X_MASK) | coarse_x;
+        self.vram.v = (self.vram.v & !VRAM_COARSE_X_MASK) | coarse_x;
     }
 
     #[inline(always)]
@@ -992,10 +988,7 @@ impl Ppu {
             frame_complete: false,
             nmi_signal: false,
             is_odd_frame: false,
-            n_frames: 0.0,
             log: false,
-            total: Instant::now(),
-            t0: Instant::now(),
             ctrl: 0,
             mask: 0,
             fine_x: 0,
@@ -1077,7 +1070,7 @@ impl Ppu {
                 self.ctrl = data;
 
                 let name_table = data as u16 & 3;
-                self.vram.t_addr = (self.vram.t_addr & !VRAM_NAMETABLE_MASK) | (name_table << 10);
+                self.vram.t = (self.vram.t & !VRAM_NAMETABLE_MASK) | (name_table << 10);
             }
             Mask => {
                 self.mask = data;
@@ -1101,34 +1094,34 @@ impl Ppu {
                     // First write: X-Scroll
                     // Coarse X (bits 3-7 of data) goes into bits 0-4 of t_addr
                     let coarse_x = ((data >> 3) & 0x1F) as u16;
-                    self.vram.t_addr = (self.vram.t_addr & !VRAM_COARSE_X_MASK) | coarse_x;
+                    self.vram.t = (self.vram.t & !VRAM_COARSE_X_MASK) | coarse_x;
                     self.fine_x = data & 0b0000_0111;
                 } else {
                     // Second write: Y-Scroll
                     // Coarse Y (bits 3-7 of data) goes into bits 5-9 of t_addr
                     let coarse_y = ((data >> 3) & 0x1F) as u16;
-                    self.vram.t_addr = (self.vram.t_addr & !VRAM_COARSE_Y_MASK) | (coarse_y << 5);
+                    self.vram.t = (self.vram.t & !VRAM_COARSE_Y_MASK) | (coarse_y << 5);
                     // Fine Y (bits 0-2 of data) goes into bits 12-14 of t_addr
                     let fine_y = data as u16 & 0x7;
-                    self.vram.t_addr = (self.vram.t_addr & !VRAM_FINE_Y_MASK) | (fine_y << 12);
+                    self.vram.t = (self.vram.t & !VRAM_FINE_Y_MASK) | (fine_y << 12);
                 }
                 self.vram.latch ^= true;
             }
             VRAMAddr => {
                 if !self.vram.latch {
-                    self.vram.t_addr = (((data & 0x3f) as u16) << 8) | (self.vram.t_addr & 0x00FF);
+                    self.vram.t = (((data & 0x3f) as u16) << 8) | (self.vram.t & 0x00FF);
                 } else {
-                    self.vram.t_addr = (self.vram.t_addr & 0x7F00) | data as u16;
-                    self.vram.addr = self.vram.t_addr;
+                    self.vram.t = (self.vram.t & 0x7F00) | data as u16;
+                    self.vram.v = self.vram.t;
                 }
                 self.vram.latch ^= true;
             }
             VRAMData => {
-                self.write(self.vram.addr, data, nes);
+                self.write(self.vram.v, data, nes);
 
                 // Increment VRAM Addr
                 let increment = if (self.ctrl & 0x04) != 0 { 32 } else { 1u16 };
-                self.vram.addr = self.vram.addr.wrapping_add(increment);
+                self.vram.v = self.vram.v.wrapping_add(increment);
             }
             _ => {}
         }
@@ -1157,10 +1150,10 @@ impl Ppu {
             }
             VRAMData => {
                 let mut fetch = self.vram.delayed_data;
-                self.vram.delayed_data = self.read(self.vram.addr, nes);
+                self.vram.delayed_data = self.read(self.vram.v, nes);
 
                 // Reading paletts bypass this delay
-                if self.vram.addr >= ADDR_PAL_START {
+                if self.vram.v >= ADDR_PAL_START {
                     fetch = self.vram.delayed_data;
                 }
 
@@ -1170,7 +1163,7 @@ impl Ppu {
                 } else {
                     1u16
                 };
-                self.vram.addr = self.vram.addr.wrapping_add(increment);
+                self.vram.v = self.vram.v.wrapping_add(increment);
 
                 return Ok(fetch);
             }
@@ -1212,10 +1205,10 @@ impl Ppu {
     }
 
     pub fn debug_format_registers(&self, out: &mut String) {
-        write!(
+        let _ = write!(
             out,
-            "STATUS: {:02X} CTRL: {:02X} MASK: {:02X} OAMAddr: {:02X} ADDR: {:04X}",
-            self.status, self.ctrl, self.mask, self.oam.addr, self.vram.addr
+            "STATUS: {:02X} CTRL: {:02X} MASK: {:02X} OAMAddr: {:02X} V: {:04X}, T: {:04X}",
+            self.status, self.ctrl, self.mask, self.oam.addr, self.vram.v, self.vram.t
         );
     }
 
@@ -1240,7 +1233,7 @@ impl Ppu {
         out: &mut [u8; DBG_CANVAS_SIZE],
     ) {
         let bank_offset = (bank_num as u16 * 0x1000) & 0x1FFF;
-        let palette_idx = palette_idx & 0x03;
+        let palette_idx = palette_idx % 8;
         for i in 0..16 {
             for j in 0..16 {
                 let offset = (16 * (j * 16 + i)) + bank_offset;

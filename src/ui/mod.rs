@@ -23,6 +23,8 @@ pub struct PanelProportions {
     pub window_w: f32,
     pub window_h: f32,
 
+    toolbar_offset: f32,
+
     // They sum 1
     upper_h: f32,
     lower_h: f32,
@@ -39,11 +41,12 @@ pub struct PanelProportions {
 
 impl PanelProportions {
     fn new(
-        window_size: [f32; 2],
+        mut window_size: [f32; 2],
         mut game_win_w: f32,
         mut game_win_h: f32,
         mut right_upper_h: f32,
         mut right_middle_h: f32,
+        toolbar_offset: f32
     ) -> Self {
         debug_assert!(
             game_win_h >= 0.0 && game_win_w >= 0.0 && right_upper_h >= 0.0 && right_middle_h >= 0.0
@@ -51,6 +54,7 @@ impl PanelProportions {
         debug_assert!(
             game_win_h <= 1.0 && game_win_w <= 1.0 && right_upper_h <= 1.0 && right_middle_h <= 1.0
         );
+        window_size[1] -= toolbar_offset;
         game_win_w *= window_size[0];
         game_win_h *= window_size[1];
         right_upper_h *= window_size[1];
@@ -65,23 +69,24 @@ impl PanelProportions {
             right_upper_h: right_upper_h,
             right_middle_h: right_middle_h,
             right_lower_h: (window_size[1] - right_middle_h - right_upper_h) + 0.5,
+            toolbar_offset
         }
     }
 
     fn position_game_win(&self) -> [f32; 2] {
-        return [0.0, 0.0];
+        return [0.0, self.toolbar_offset];
     }
     fn position_lower(&self) -> [f32; 2] {
-        return [0.0, self.upper_h];
+        return [0.0, self.upper_h + self.toolbar_offset];
     }
     fn position_right_upper(&self) -> [f32; 2] {
-        return [self.left_w, 0.0];
+        return [self.left_w, self.toolbar_offset];
     }
     fn position_right_middle(&self) -> [f32; 2] {
-        return [self.left_w, self.right_upper_h];
+        return [self.left_w, self.right_upper_h + self.toolbar_offset];
     }
     fn position_right_lower(&self) -> [f32; 2] {
-        return [self.left_w, self.right_middle_h + self.right_upper_h];
+        return [self.left_w, self.right_middle_h + self.right_upper_h + self.toolbar_offset];
     }
 
     fn size_game_win(&self) -> [f32; 2] {
@@ -341,6 +346,8 @@ impl AppUI {
         // }
         let ui = self.ctx.new_frame();
 
+        let mut toolbar_height = 0.0;
+
         { let window_size = ui.window_size();
             let _t = ui.push_style_color(StyleColor::PopupBg, self.theme.bg);
             let _t1 = ui.push_style_color(StyleColor::MenuBarBg, self.theme.bg);
@@ -357,6 +364,7 @@ impl AppUI {
             dimmer_highlight[3] = 0.5;
             let _t10 = ui.push_style_color(StyleColor::FrameBgActive, dimmer_highlight);
             if let Some(_menu_bar) = ui.begin_main_menu_bar() {
+                toolbar_height = ui.window_size()[1];
             // 2. The "File" Dropdown (Save States, Loading, Exiting)
                 if let Some(_menu_file) = ui.begin_menu("File") {
                     if ui.menu_item("Switch ROM...") {
@@ -418,6 +426,40 @@ impl AppUI {
                     let mut volume = (st.audio.volume * 100.0) as i32;
                     let _ = ui.slider_config("##volume", 0, 100).display_format("%d").build(&mut volume);
                     st.audio.volume = (volume as f32) / 100.0;
+                    ui.separator(); 
+                    ui.text_colored(self.theme.value, "Mute Audio Channels");
+                    if ui.menu_item_config("Pulse Wave 1")
+                        .selected(st.audio.pw1_mut)
+                        .build() 
+                    {
+                        st.audio.pw1_mut ^= true;
+                    }
+                    if ui.menu_item_config("Pulse Wave 2")
+                        .selected(st.audio.pw2_mut)
+                        .build() 
+                    {
+                        st.audio.pw2_mut ^= true;
+                    }
+                    if ui.menu_item_config("Triangle Wave")
+                        .selected(st.audio.trg_mut)
+                        .build() 
+                    {
+                        st.audio.trg_mut ^= true;
+                    }
+                    if ui.menu_item_config("Noise")
+                        .selected(st.audio.nch_mut)
+                        .build() 
+                    {
+                        st.audio.nch_mut ^= true;
+                    }
+                    if ui.menu_item_config("DMC")
+                        .selected(st.audio.dmc_mut)
+                        .build() 
+                    {
+                        st.audio.dmc_mut ^= true;
+                    }
+                    
+
                 }
 
                 // 4. The "Window" Dropdown (Toggle Debuggers, PPU Viewer, Log Windows)
@@ -436,9 +478,9 @@ impl AppUI {
         ]; // Get the window size;
         let dims;
         if st.dev_mode {
-            dims = PanelProportions::new(window, 0.7, 0.7, 0.25, 0.33);
+            dims = PanelProportions::new(window, 0.7, 0.7, 0.25, 0.33, toolbar_height);
         } else {
-            dims = PanelProportions::new(window, 1.0, 1.0, 0.25, 0.33);
+            dims = PanelProportions::new(window, 1.0, 1.0, 0.25, 0.33, toolbar_height);
         }
 
 
@@ -479,7 +521,7 @@ impl AppUI {
                     ui.set_window_font_scale(1.0);
                 }
 
-                let content_size = ui.window_size();
+                let content_size = ui.content_region_avail();
                 let nes_aspect = 256.0 / 240.0;
                 let window_aspect = content_size[0] / content_size[1];
 

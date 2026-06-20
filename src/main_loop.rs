@@ -12,6 +12,10 @@ use super::*;
 
 static NES_CTX: AtomicPtr<AppCtx> = AtomicPtr::new(std::ptr::null_mut());
 
+const SCREEN_WIDTH: usize = 256;
+const SCREEN_HEIGHT: usize = 240;
+const SCREEN_SIZE: usize = SCREEN_WIDTH * SCREEN_HEIGHT * 4;
+
 pub fn nes_loop(mut ctx: Box<AppCtx>) -> Result<(), Box<dyn Error>> {
     let mut dissasembly = String::with_capacity(65536);
     let mut mem_page = [None; 256];
@@ -32,6 +36,11 @@ pub fn nes_loop(mut ctx: Box<AppCtx>) -> Result<(), Box<dyn Error>> {
 
     // APU
     let mut audio_volume = 1.0f32;
+    let mut pw1_mut = false;
+    let mut pw2_mut = false;
+    let mut trg_mut = false;
+    let mut nch_mut = false;
+    let mut dmc_mut = false;
 
     // log
     let mut log = false;
@@ -39,7 +48,8 @@ pub fn nes_loop(mut ctx: Box<AppCtx>) -> Result<(), Box<dyn Error>> {
 
     let mut step_instruction = true; // Step through next instruction
     let mut frame_has_changed = true; // We may have new info so we fetch it from NES
-    let mut new_frame_generated = true; // PPU has generated another frame, force App update
+    let mut updated = true;
+    let mut curr_frame_drawn = false;
 
     let mut dev_mode = false;
 
@@ -52,7 +62,6 @@ pub fn nes_loop(mut ctx: Box<AppCtx>) -> Result<(), Box<dyn Error>> {
     let mut nanos_since_last_frame;
     let mut nanos_since_last_gameframe;
 
-    let mut current_frame_drawn = false;
 
     let mut t0 = Instant::now();
     let mut t0g = Instant::now();
@@ -72,15 +81,16 @@ pub fn nes_loop(mut ctx: Box<AppCtx>) -> Result<(), Box<dyn Error>> {
                 .update_controller_status(ctx.ui.raylib_handle(), None);
         }
 
-        let updated = ctx.update_info.load(Ordering::Acquire);
+        let prev_updated = updated;
+        updated = ctx.update_info.load(Ordering::Acquire);
 
 
-        if updated {
+        if updated || prev_updated  {
+            curr_frame_drawn = false;
             pfs.mem_edit_page_changed = true;
             frame_has_changed = true;
             ctx.update_info.store(false, Ordering::Release);
             ctx.ui.update_game_screen(ctx.nes.ppu.get_front_screen());
-            current_frame_drawn = false;
         }
 
         #[cfg(feature = "log")]
@@ -132,7 +142,12 @@ pub fn nes_loop(mut ctx: Box<AppCtx>) -> Result<(), Box<dyn Error>> {
                 hide_overscan_region: hide_or
             },
             audio: AudioSettings {
-                volume: audio_volume
+                volume: audio_volume,
+                pw1_mut,
+                pw2_mut,
+                trg_mut,
+                nch_mut,
+                dmc_mut
             },
             file_action: FileAction::None,
             memory_editor: MemEdit {
@@ -174,18 +189,15 @@ pub fn nes_loop(mut ctx: Box<AppCtx>) -> Result<(), Box<dyn Error>> {
         }*/
 
         if nanos_since_last_frame >= FPS60_ELAPSED {
+            if curr_frame_drawn == false {
+                curr_frame_drawn = true;
+                t0g = Instant::now();
+            }
             t0 += Duration::from_nanos(FPS60_ELAPSED as u64);
-            handle_keys(&mut ctx, &mut step_instruction, &mut dev_mode, &mut selected_palette, &mut frame_has_changed, &mut fps10_draw_ctrl, &mut toggle_mapper)?;
-            // log::info!("New frame");
-            let us = nanos_since_last_frame as f64;
-            // if false {
-            //     log::info!(
-            //         "FPS: {}, Delay: {} ms, New frame? {}",
-            //         1_000_000.0 / us,
-            //         us / 1000.0,
-            //         new_frame_generated
-            //     );
-            // }
+            handle_keys(&mut ctx, &mut updated, &mut step_instruction, &mut dev_mode, &mut selected_palette, &mut frame_has_changed, &mut fps10_draw_ctrl, &mut toggle_mapper)?;
+            if step_instruction && !ctx.is_running.load(Ordering::Acquire) {
+                ctx.step_instruction.store(true, Ordering::Release);
+            }
             
             title.clear();
             let version_tag;
@@ -220,10 +232,17 @@ pub fn nes_loop(mut ctx: Box<AppCtx>) -> Result<(), Box<dyn Error>> {
             hide_or = st.video.hide_overscan_region;
             ctx.nes.ppu.options.hide_overscan_region = hide_or;
 
-            if !current_frame_drawn {
-                t0g = Instant::now();
-            }
-            current_frame_drawn = true;
+            pw1_mut = st.audio.pw1_mut;
+            pw2_mut = st.audio.pw2_mut;
+            trg_mut = st.audio.trg_mut;
+            nch_mut = st.audio.nch_mut;
+            dmc_mut = st.audio.dmc_mut;
+
+            ctx.nes.apu.options.pw1_mut = pw1_mut;
+            ctx.nes.apu.options.pw2_mut = pw2_mut;
+            ctx.nes.apu.options.trg_mut = trg_mut;
+            ctx.nes.apu.options.nch_mut = nch_mut;
+            ctx.nes.apu.options.dmc_mut = dmc_mut;
 
             ctx.breakpoint = st.dissasembly.bkpt;
             bkpt = ctx.breakpoint;
@@ -259,7 +278,6 @@ pub fn nes_loop(mut ctx: Box<AppCtx>) -> Result<(), Box<dyn Error>> {
         // log::info!("real_time = {}", real_time);
         step_instruction = false;
         frame_has_changed = false;
-        new_frame_generated = false;
     }
 
     ctx.nes.try_store_save_file(None)?;
@@ -268,6 +286,7 @@ pub fn nes_loop(mut ctx: Box<AppCtx>) -> Result<(), Box<dyn Error>> {
 
 fn handle_keys(
     ctx: &mut AppCtx,
+    updated: &mut bool,
     step_instruction: &mut bool,
     dev_mode: &mut bool,
     selected_palette: &mut u16,
@@ -304,6 +323,7 @@ fn handle_keys(
         .is_key_pressed(raylib::ffi::KeyboardKey::KEY_F11)
     {
         *dev_mode ^= true;
+        *updated = true;
     }
     if ctx
         .ui
@@ -311,7 +331,7 @@ fn handle_keys(
         .is_key_pressed(KeyboardKey::KEY_COMMA)
     {
         *selected_palette += 1;
-        *selected_palette &= 0x7;
+        *selected_palette %= 8;
         *frame_has_changed = true;
         *fps10_draw_ctrl = 6;
     }
@@ -322,9 +342,9 @@ fn handle_keys(
     Ok(())
 }
 
-pub const AUDIO_BUFFER_SIZE: usize = 727;
+pub const AUDIO_BUFFER_SIZE: usize = 733;
 pub const FPS60_ELAPSED: u128 = 16639267;
-pub const EMU_SAMPLE_RATE: u32 = 43653;
+pub const EMU_SAMPLE_RATE: u32 = 44100;
 
 unsafe extern "C" fn nes_audio_callback(buffer: *mut c_void, sample_count: u32) {
     let ctx_ptr = NES_CTX.load(Ordering::Acquire);
@@ -339,6 +359,18 @@ unsafe extern "C" fn nes_audio_callback(buffer: *mut c_void, sample_count: u32) 
     let out_buffer = unsafe { std::slice::from_raw_parts_mut(buffer as *mut f32, sample_count) };
 
     let ctx = unsafe { ctx_ptr.as_mut().unwrap() };
+
+    if ctx.step_instruction.load(Ordering::Acquire) {
+        loop {
+            ctx.nes.clock(None).expect("Failure while stepping");
+            let _ = ctx.audio_consumer.try_pop();
+            if ctx.nes.cpu.state.cycles_left == 0 {
+                break;
+            }
+        }
+        ctx.step_instruction.store(false, Ordering::Release);
+        ctx.update_info.store(true, Ordering::Release);
+    }
 
     if !ctx.is_running.load(Ordering::Acquire) {
         unsafe {

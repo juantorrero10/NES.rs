@@ -34,10 +34,18 @@ pub fn update(
             imgui::TextureId::new(cb0.texture().id as usize),
             [draw_n, draw_n],
         )
-        .build(ui); 
+        .build(ui);
+
+        ui.set_cursor_pos(curr_pos);
+        ui.indent_by(ui.window_size()[0] * 0.50);
+
+        if st.ppu_info.chr_bank_0[0..=3] != [0, 0, 0, 0] {
+            draw_palettes(&curr_pos, ui, st, draw_n);
+        }
+        
     
         ui.set_cursor_pos(curr_pos);
-        ui.indent_by(ui.window_size()[0] * 0.49);
+        ui.indent_by(ui.window_size()[0] * 0.02);
     
         imgui::Image::new(
             imgui::TextureId::new(cb1.texture().id as usize),
@@ -64,4 +72,51 @@ pub fn update(
         ui.set_window_font_scale(1.0);
     }
 
+}
+
+
+fn draw_palettes(curr_pos: &[f32; 2], ui: &imgui::Ui, st: &FrameState, draw_n: f32) {
+    let draw_list = ui.get_window_draw_list();
+        let window_pos = ui.window_pos();
+
+        let left_texture_end_x = curr_pos[0] + draw_n;
+        let right_texture_start_x = ui.window_size()[0] * 0.55; 
+        let center_gap_width = right_texture_start_x - left_texture_end_x;
+
+        let box_dim = ui.window_size()[0] * 0.015; 
+        let total_bar_width = box_dim * 4.0; 
+
+        let bar_start_x = window_pos[0] + left_texture_end_x + ((center_gap_width - total_bar_width) * 0.5);
+
+        let vertical_spacing = ui.window_size()[1] * 0.06; 
+        let mut current_y = window_pos[1] + curr_pos[1] + vertical_spacing; 
+
+        // 2. Loop through all 8 palettes
+        for palette in st.ppu_info.palettes.iter() {
+            
+            // Loop through the 4 colors inside this individual palette entry
+            for (color_idx, color) in palette.iter().enumerate() {
+                let x_offset = (color_idx as f32) * box_dim;
+
+                // Calculate rectangle corners
+                let rect_start = [bar_start_x + x_offset, current_y];
+                let rect_end = [rect_start[0] + box_dim, rect_start[1] + box_dim];
+
+                // Convert u8 0..255 colors to f32 0.0..1.0
+                let imgui_color = [
+                    color[0] as f32 / 255.0,
+                    color[1] as f32 / 255.0,
+                    color[2] as f32 / 255.0,
+                    1.0,
+                ];
+
+                // CORRECTED IMGUI-RS API: Draw the filled color square
+                draw_list.add_rect(rect_start, rect_end, imgui_color)
+                    .filled(true)
+                    .build();
+            }
+
+            // Move down to prepare the screen coordinate for the next row entry
+            current_y += box_dim + vertical_spacing;
+        }
 }

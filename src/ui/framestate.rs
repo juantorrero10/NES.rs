@@ -25,6 +25,11 @@ pub enum FileAction {
 
 pub struct AudioSettings {
     pub volume: f32,
+    pub pw1_mut: bool,
+    pub pw2_mut: bool,
+    pub trg_mut: bool,
+    pub nch_mut: bool,
+    pub dmc_mut: bool,
 }
 
 pub struct VideoSettings {
