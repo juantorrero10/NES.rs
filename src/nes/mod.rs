@@ -9,17 +9,15 @@ use std::{
 use thiserror::Error;
 
 use crate::{
-    AudioProducer,
-    main_loop::EMU_SAMPLE_RATE,
-    nes::{
+    EMU_SAMPLE_RATE, emu_loop::AudioProducer, nes::{
         apu::Apu,
         bus_cpu::{BusCpu, BusCpuError, IOResult},
         controller::Controller,
-        cpu::{Cpu},
+        cpu::Cpu,
         game_rom::ROMErr,
         mappers::Mapper,
         ppu::{BusPpu,Ppu, PpuRegister},
-    },
+    }, ui::framestate::FileAction
 };
 
 mod apu;
@@ -503,6 +501,25 @@ impl Nes {
         self.bus_ppu.set_palette_data(&snap[ptr..(ptr + self.bus_ppu.get_palette_data().len())]);
         ptr += self.bus_ppu.get_palette_data().len();
         self.mapper = game_rom::create_mapper_from_snapshot(self.mapper_id, &snap[ptr..])?;
+        Ok(())
+    }
+
+    pub fn handle_file_action(&mut self, fa: &FileAction) -> Result<()> {
+        match fa {
+            FileAction::LoadROM(path) => { self.swap_rom(path)?; self.reset()?; },
+            FileAction::LoadSRAM(path) => { self.try_load_save_file(Some(path))?; },
+            FileAction::StoreSRAM => { self.try_store_save_file(None)?; }
+            FileAction::TakeSnapshot(path) => { 
+                if let Err(e) = self.take_snapshot(path) {
+                    log::error!("{}", e);
+                }
+            }
+            FileAction::LoadSnapshot(path) => {
+                if let Err(e) = self.load_snapshot(path) {
+                    log::error!("{}", e);
+                }            }
+            _ => {}
+        }
         Ok(())
     }
 }

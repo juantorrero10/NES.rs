@@ -219,11 +219,11 @@ pub struct Ppu {
     bg_regs: BGRegs,
     fg_regs: FGRegs,
 
-    pub options: PpuOptions
+    pub options: PpuOptions,
 }
 
 pub struct PpuOptions {
-    pub hide_overscan_region: bool
+    pub hide_overscan_region: bool,
 }
 
 #[derive(Default)]
@@ -663,7 +663,12 @@ impl Ppu {
     }
 
     fn process_bg_step(&mut self, nes: *mut Nes) {
-        self.shift_bg_registers();
+        let h_blank = (257..321).contains(&self.cycle) || (337..341).contains(&self.cycle);
+        let v_blank = self.scanline > 240;
+
+        if !h_blank && !v_blank {
+            self.shift_bg_registers();
+        }
         // Process each of the 8 sub-cycles
         let sub_cycle = (self.cycle - 1) % 8;
         match sub_cycle {
@@ -799,9 +804,9 @@ impl Ppu {
         let offset = 4 * (y * SCREEN_WIDTH + x);
 
         let hide_or = self.options.hide_overscan_region;
-        
+
         let screen = self.back_screen();
-        
+
         if hide_or {
             if y < 8 || y > SCREEN_HEIGHT as usize - 8 {
                 screen[offset..(offset + 4)].copy_from_slice(&[0, 0, 0, 255]);
@@ -876,9 +881,13 @@ impl Ppu {
     fn shift_bg_registers(&mut self) {
         if self.is_rendering_enabled() {
             self.bg_regs.shift_pat_low <<= 1;
+            self.bg_regs.shift_pat_low |= 1;
             self.bg_regs.shift_pat_high <<= 1;
+            self.bg_regs.shift_pat_high |= 1;
             self.bg_regs.shift_att_low <<= 1;
+            self.bg_regs.shift_att_low |= 1;
             self.bg_regs.shift_att_high <<= 1;
+            self.bg_regs.shift_att_high |= 1;
         }
     }
 
@@ -995,7 +1004,9 @@ impl Ppu {
             status: 0,
             cycle: 0,
             scanline: -1,
-            options: PpuOptions { hide_overscan_region: false }
+            options: PpuOptions {
+                hide_overscan_region: false,
+            },
         }
     }
 

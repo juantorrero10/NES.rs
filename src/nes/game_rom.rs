@@ -58,9 +58,9 @@ use crate::nes::{
 pub fn load_rom(filepath: &OsString) -> Result<(u8, Box<dyn Mapper>)> {
     let mut f = File::open(filepath)?;
     let mut header = [0u8; size_of::<NesGameHeader>()];
-    log::info!("Trying to load {:?}:\n{:#?}", filepath, header);
     f.read(header.as_mut_slice())?;
     let header: NesGameHeader = unsafe { mem::transmute(header) };
+    log::info!("Trying to load {:?}:\n{:#?}", filepath, header);
 
     if header.magic != NES_MAGIC {
         return Err(ROMErr::InvalidMagic(filepath.to_owned()));

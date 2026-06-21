@@ -2,19 +2,22 @@ use std::{collections::HashMap, ffi::OsString};
 
 use crate::nes::cpu::RegFile6502;
 
-pub struct FrameState<'a> {
+
+pub struct FrameState {
     pub show_press_start_msg: bool,
     pub dev_mode: bool,
     pub cpu_info: CpuInfo,
-    pub dissasembly: Dissassebly<'a>,
-    pub memory_editor: MemEdit<'a>,
-    pub ppu_info: PpuInfo<'a>,
+    pub dissasembly: Dissassebly,
+    pub memory_editor: MemEdit,
+    pub ppu_info: PpuInfo,
     pub file_action: FileAction,
     pub audio: AudioSettings,
-    pub video: VideoSettings
+    pub video: VideoSettings,
 }
 
+#[derive(Default)]
 pub enum FileAction {
+    #[default]
     None,
     LoadROM(OsString),
     LoadSRAM(OsString),
@@ -23,6 +26,7 @@ pub enum FileAction {
     LoadSnapshot(OsString),
 }
 
+#[derive(Clone)]
 pub struct AudioSettings {
     pub volume: f32,
     pub pw1_mut: bool,
@@ -32,66 +36,145 @@ pub struct AudioSettings {
     pub dmc_mut: bool,
 }
 
+impl Default for AudioSettings {
+    fn default() -> Self {
+        Self {
+            volume: 1.0,
+            pw1_mut: false,
+            pw2_mut: false,
+            trg_mut: false,
+            nch_mut: false,
+            dmc_mut: false,
+        }
+    }
+}
+
+#[derive(Default)]
 pub struct VideoSettings {
     pub hide_overscan_region: bool,
 }
 
+pub struct ChrBanks(pub [u8; 128 * 128 * 4], pub [u8; 128 * 128 * 4]);
 
-pub struct PpuInfo<'a> {
-    pub chr_bank_0: &'a [u8],
-    pub chr_bank_1: &'a [u8],
+impl Default for ChrBanks {
+    fn default() -> Self {
+        Self([0u8; 128 * 128 * 4], [0u8; 128 * 128 * 4])
+    }
+}
+
+#[derive(Default)]
+pub struct PpuInfo {
+    pub chr_banks: ChrBanks,
     pub palettes: [[[u8; 4]; 4]; 8],
     pub selected_palette: u16,
-    pub ppu_regs: &'a str,
+    pub ppu_regs: String,
     pub toggle_mapper: bool,
     pub display_mapper_info: bool,
-    pub mapper_info: &'a str,
-
+    pub mapper_info: String,
 }
 
-pub struct Dissassebly<'a> {
+impl PpuInfo {
+    fn initialize(&mut self) {
+        self.chr_banks.0.fill(0);
+        self.chr_banks.1.fill(0);
+        self.palettes.iter_mut().for_each(|p| p.fill([0u8; 4]));
+        self.selected_palette = 0;
+        self.ppu_regs = String::with_capacity(128);
+        self.mapper_info = String::with_capacity(512);
+        self.toggle_mapper = false;
+        self.display_mapper_info = false;
+    }
+}
+
+#[derive(Default)]
+pub struct Dissassebly {
     pub update: bool,
-    pub text: &'a str,
-    pub mapping: &'a HashMap<u16, (usize, usize, u16)>,
+    pub text: String,
+    pub mapping: HashMap<u16, (usize, usize, u16)>,
     pub bkpt: Option<u16>,
+    pub options: DissOptions
 }
 
-pub struct MemEdit<'a> {
+pub struct DissOptions {
+    pub focus_pc: bool,
+    pub from: u16,
+    pub to: u16,
+    pub show: u16,
+}
+
+impl Default for DissOptions {
+    fn default() -> Self {
+        Self {
+            focus_pc: true,
+            from: 0,
+            to: 200,
+            show: 200,
+        }
+    }
+}
+
+pub struct MemEdit {
     pub paged_changed: bool,
     pub current_page: u8,
     pub search_byte_highlight: Option<u8>,
     pub modify_byte: Option<(u16, u8)>,
-    pub page_data: &'a [Option<u8>],
+    pub page_data: [Option<u8>; 256],
 }
 
+impl Default for MemEdit {
+    fn default() -> Self {
+        Self {
+            paged_changed: false,
+            current_page: 0,
+            search_byte_highlight: None,
+            modify_byte: None,
+            page_data: [None; 256],
+        }
+    }
+}
+
+#[derive(Default)]
 pub struct CpuInfo {
     pub regs: RegFile6502,
     pub cycles_left: usize,
     pub global: usize,
 }
 
-pub struct PersistentFrameState {
-    pub mem_edit_current_page: u8,
-    pub mem_edit_search_byte_highlight: Option<u8>,
-    pub mem_edit_page_changed: bool,
-}
+impl FrameState {
+    #[inline]
+    pub fn clear(&mut self) {
+        self.dissasembly.update = false;
+        self.file_action = FileAction::None;
+        self.memory_editor.modify_byte = None;
+        self.memory_editor.paged_changed = false;
+    }
 
-impl PersistentFrameState {
-    pub fn save_persistent_info(fs: FrameState) -> Self {
-        Self {
-            mem_edit_current_page: fs.memory_editor.current_page,
-            mem_edit_search_byte_highlight: fs.memory_editor.search_byte_highlight,
-            mem_edit_page_changed: fs.memory_editor.paged_changed, 
+    #[inline]
+    pub fn clear_debug(&mut self) {
+        self.dissasembly.text.clear();
+        self.dissasembly.mapping.clear();
+        self.ppu_info.ppu_regs.clear();
+        self.ppu_info.mapper_info.clear();
+    }
+
+    // It is a very heavy type, will likely trigger a stack overflow if not boxed.
+    pub fn new_boxed() -> Box<Self> {
+        let mut ret = Box::<Self>::new_uninit();
+        unsafe {
+            let ptr = ret.as_mut_ptr();
+            std::ptr::write(&mut (*ptr).ppu_info,  PpuInfo::default());
+            std::ptr::write(&mut (*ptr).cpu_info, CpuInfo::default());
+            std::ptr::write(&mut (*ptr).memory_editor, MemEdit::default());
+            std::ptr::write(&mut (*ptr).file_action, FileAction::default());
+            std::ptr::write(&mut (*ptr).audio, AudioSettings::default());
+            std::ptr::write(&mut (*ptr).video, VideoSettings::default());
+            std::ptr::write(&mut (*ptr).dev_mode, false);
+            std::ptr::write(&mut (*ptr).dissasembly, Dissassebly::default());
+            std::ptr::write(&mut (*ptr).show_press_start_msg, true);
+            ret.assume_init()
         }
+
     }
 }
 
-impl Default for PersistentFrameState {
-    fn default() -> Self {
-        Self {
-            mem_edit_page_changed: true,
-            mem_edit_current_page: 0,
-            mem_edit_search_byte_highlight: None,
-        }
-    }
-}
+

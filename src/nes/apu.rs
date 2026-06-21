@@ -3,8 +3,8 @@ use core::f32;
 use ringbuf::traits::Producer;
 
 use crate::{
-    AudioProducer,
-    nes::{Nes, NesError},
+    emu_loop::AudioProducer,
+    nes::{Nes, NesError}, ui,
 };
 
 pub struct Apu {
@@ -34,16 +34,7 @@ pub struct Apu {
     hpf90: HighPassFilter,
     lpf19k: LowPassFilter,
 
-    pub options: ApuOptions,
-}
-
-pub struct ApuOptions {
-    pub volume_multiplier: f32,
-    pub pw1_mut: bool,
-    pub pw2_mut: bool,
-    pub trg_mut: bool,
-    pub nch_mut: bool,
-    pub dmc_mut: bool,
+    pub options: ui::framestate::AudioSettings,
 }
 
 #[derive(Default, Clone, Copy)]
@@ -206,24 +197,12 @@ impl Apu {
             triangle_ch: TriangleWaveChannel::default(),
             noise_ch: NoiseChannel::default(),
             dmc_ch: DmcChannel::default(),
-            options: ApuOptions {
-                volume_multiplier: 1.0,
-                pw1_mut: false,
-                pw2_mut: false,
-                trg_mut: false,
-                nch_mut: false,
-                dmc_mut: false,
-            },
-
+            options: ui::framestate::AudioSettings::default(),
             irq_pending: false,
 
             hpf90: HighPassFilter::new(sample_rate, 90.0),
             lpf19k: LowPassFilter::new(sample_rate, 19000.0),
         }
-    }
-
-    pub fn set_volume(&mut self, v: f32) {
-        self.options.volume_multiplier = v;
     }
 
     pub fn reset(&mut self) {
@@ -334,7 +313,7 @@ impl Apu {
         // Make-up gain
         filtered *= 3.0;
 
-        filtered *= self.options.volume_multiplier;
+        filtered *= self.options.volume;
 
         // Push down to the lockless consumer buffer
         let _ = self.producer.try_push(filtered);

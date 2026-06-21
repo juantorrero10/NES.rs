@@ -5,7 +5,6 @@ pub fn update(
     dims: &PanelProportions,
     theme: &Theme,
     fonts: &Fonts,
-    options: &mut Options,
     addr_buffer: &mut String,
     text_buffer: &mut String,
     cmd_buffer: &mut String,

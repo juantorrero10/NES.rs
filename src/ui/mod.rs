@@ -7,12 +7,14 @@ use raylib::{
 };
 use raylib_imgui_rs::Renderer;
 
-use crate::{load_emu_snapshot_dialog, load_rom_dialog, load_sram_dialog, main_loop::{AUDIO_BUFFER_SIZE, EMU_SAMPLE_RATE}, nes::cpu::Flag6502, store_emu_snapshot_dialog, ui::framestate::{FileAction, FrameState}};
+use crate::{AUDIO_BUFFER_SIZE, EMU_SAMPLE_RATE, utils::{load_emu_snapshot_dialog, load_rom_dialog, load_sram_dialog, store_emu_snapshot_dialog}, nes::cpu::Flag6502, ui::framestate::{FileAction, FrameState}};
 
 pub mod framestate;
 mod window_dissasm;
 mod window_memory;
 mod window_ppu;
+
+
 
 struct Panel {
     pos: [f32; 2],
@@ -140,23 +142,7 @@ impl RaylibInfo {
 
 pub type ScreenOutput = (*const u8, usize);
 
-pub struct Options {
-    disassm_focus_pc: bool,
-    dissasm_from: u16,
-    dissasm_to: u16,
-    dissasm_show: u16,
-}
 
-impl Default for Options {
-    fn default() -> Self {
-        Self {
-            disassm_focus_pc: true,
-            dissasm_from: 0,
-            dissasm_to: 200,
-            dissasm_show: 200,
-        }
-    }
-}
 
 type Fonts = [FontId; 3];
 pub struct Theme {
@@ -209,7 +195,6 @@ pub struct AppUI {
     pub raylib: RaylibInfo,
     theme: Theme,
     fonts: Fonts,
-    options: Options,
     text_buffer: String,
     addr_disassm_buffer: String,
     addr_memedit_buffer: String,
@@ -291,7 +276,6 @@ impl AppUI {
         // rl.set_target_fps(60);
 
         Self {
-            options: Options::default(),
             ctx,
             renderer,
             raylib: RaylibInfo::new(rl, thread, screen, c0, c1, stream, audio),
@@ -304,7 +288,7 @@ impl AppUI {
         }
     }
 
-    pub fn update<'a>(&mut self, mut st: FrameState<'a>) -> FrameState<'a> {
+    pub fn update<'a>(&mut self, st: &mut FrameState) {
         self.text_buffer.clear();
         let buffer = &mut self.text_buffer;
 
@@ -559,9 +543,8 @@ impl AppUI {
                         &mut self.raylib.chr_bank1,
                         &self.theme,
                         &self.fonts,
-                        &mut self.options,
                         buffer,
-                        &mut st,
+                        st,
                     );
                 });
             ui.window("CPU")
@@ -639,11 +622,10 @@ impl AppUI {
                         &dims,
                         &self.theme,
                         &self.fonts,
-                        &mut self.options,
                         &mut self.addr_memedit_buffer,
                         &mut self.text_buffer,
                         &mut self.mod_memedit_buffer,
-                        &mut st,
+                        st,
                     );
                 });
             ui.window("Disassemble")
@@ -656,18 +638,15 @@ impl AppUI {
                         &dims,
                         &self.theme,
                         &self.fonts,
-                        &mut self.options,
                         &mut self.addr_disassm_buffer,
                         &mut self.text_buffer,
-                        &mut st,
+                        st,
                     )
                 });
         }
         let mut d = self.raylib.handle.begin_drawing(&self.raylib.thread);
         d.clear_background(raylib::prelude::Color::DARKGRAY);
         self.renderer.render(&mut self.ctx, &mut d);
-
-        st
     }
 
     pub fn raylib(&self) -> &RaylibInfo {

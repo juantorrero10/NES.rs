@@ -1,13 +1,12 @@
 use imgui::StyleColor;
 
-use crate::ui::{Fonts, Options, PanelProportions, Theme, framestate::FrameState};
+use crate::ui::{Fonts, PanelProportions, Theme, framestate::FrameState};
 
 pub fn update(
     ui: &imgui::Ui,
     dims: &PanelProportions,
     theme: &Theme,
     fonts: &Fonts,
-    options: &mut Options,
     addr_buffer: &mut String,
     text_buffer: &mut String,
     st: &mut FrameState,
@@ -20,12 +19,14 @@ pub fn update(
             };
     }
 
+    let options = &mut st.dissasembly.options;
+
     ui.dummy([0.0, dims.window_h * 0.004]);
     ui.indent_by(dims.window_w * 0.007);
     ui.text_colored(theme.title, "DISASSEMBLY");
     ui.separator();
     ui.dummy([0.0, dims.window_h * 0.01]);
-    let c_bg = if !options.disassm_focus_pc {
+    let c_bg = if !options.focus_pc {
         theme.button
     } else {
         theme.highlight
@@ -46,15 +47,15 @@ pub fn update(
         match u16::from_str_radix(&addr_buffer, 16) {
             Ok(a) => {
                 target_addr = a;
-                options.disassm_focus_pc = false;
+                options.focus_pc = false;
                 if a >= 0x8000 {
-                    let diff = std::cmp::min(options.dissasm_show / 2, 0xFFFF - a);
-                    options.dissasm_from = a - options.dissasm_show + diff;
-                    options.dissasm_to = a + diff;
+                    let diff = std::cmp::min(options.show / 2, 0xFFFF - a);
+                    options.from = a - options.show + diff;
+                    options.to = a + diff;
                 } else {
-                    let diff = std::cmp::min(options.dissasm_show / 2, a);
-                    options.dissasm_from = a - diff;
-                    options.dissasm_to = a + options.dissasm_show - diff;
+                    let diff = std::cmp::min(options.show / 2, a);
+                    options.from = a - diff;
+                    options.to = a + options.show - diff;
                 };
                 has_jumped = true;
             }
@@ -67,7 +68,7 @@ pub fn update(
     ui.same_line();
     let _t = ui.push_style_color(StyleColor::Button, c_bg);
     if ui.button("Lock") {
-        options.disassm_focus_pc = !options.disassm_focus_pc;
+        options.focus_pc = !options.focus_pc;
     }
     ui.same_line();
     _t.pop();
@@ -82,7 +83,7 @@ pub fn update(
         }
     }
     _t.pop();
-    let allow_scroll = if options.disassm_focus_pc {
+    let allow_scroll = if options.focus_pc {
         imgui::WindowFlags::NO_SCROLL_WITH_MOUSE
     } else {
         imgui::WindowFlags::empty()
@@ -103,31 +104,31 @@ pub fn update(
             let current_scroll = ui.scroll_y();
             let max_scroll = ui.scroll_max_y();
             if max_scroll != 0.0 {
-                if current_scroll <= 0.0 && options.dissasm_from != 0 {
-                    let diff = std::cmp::min(options.dissasm_show / 4, options.dissasm_from);
-                    options.dissasm_from = options.dissasm_from.saturating_sub(diff);
-                    options.dissasm_to = options.dissasm_to.saturating_sub(diff);
+                if current_scroll <= 0.0 && options.from != 0 {
+                    let diff = std::cmp::min(options.show / 4, options.from);
+                    options.from = options.from.saturating_sub(diff);
+                    options.to = options.to.saturating_sub(diff);
                     ui.set_scroll_y(diff as f32 * line_height);
                 }
 
-                if current_scroll >= max_scroll - 1.0 && options.dissasm_to != 0xFFFF {
-                    let diff = std::cmp::min(options.dissasm_show / 4, 0xFFFF - options.dissasm_to);
-                    options.dissasm_from = options.dissasm_from.saturating_add(diff);
-                    options.dissasm_to = options.dissasm_to.saturating_add(diff);
+                if current_scroll >= max_scroll - 1.0 && options.to != 0xFFFF {
+                    let diff = std::cmp::min(options.show / 4, 0xFFFF - options.to);
+                    options.from = options.from.saturating_add(diff);
+                    options.to = options.to.saturating_add(diff);
 
                     // Move camera up to maintain relative position
                     ui.set_scroll_y(current_scroll - (diff as f32 * line_height));
                 }
             }
 
-            if options.disassm_focus_pc {
-                options.dissasm_from = st.cpu_info.regs.pc - (options.dissasm_show / 2) as u16;
-                options.dissasm_to = st.cpu_info.regs.pc + (options.dissasm_show / 2) as u16;
+            if options.focus_pc {
+                options.from = st.cpu_info.regs.pc - (options.show / 2) as u16;
+                options.to = st.cpu_info.regs.pc + (options.show / 2) as u16;
             }
             // Update line height
             let line_height = ui.text_line_height_with_spacing();
-            while i <= options.dissasm_show as u32 {
-                let addr = options.dissasm_from + i as u16;
+            while i <= options.show as u32 {
+                let addr = options.from + i as u16;
                 if addr == st.cpu_info.regs.pc {
                     pc_line_index = current_line_count;
                     padding_text = " > ";
@@ -158,12 +159,12 @@ pub fn update(
                 }
                 current_line_count += 1;
             }
-            if has_jumped && !options.disassm_focus_pc {
-                let target_y = (target_addr - options.dissasm_from) as f32 * line_height;
+            if has_jumped && !options.focus_pc {
+                let target_y = (target_addr - options.from) as f32 * line_height;
                 let center_offset = target_y - (ui.window_size()[1] / 2.0) + (line_height / 2.0);
                 ui.set_scroll_y(center_offset);
             }
-            if options.disassm_focus_pc {
+            if options.focus_pc {
                 let target_y = pc_line_index as f32 * line_height;
                 let center_offset = target_y - (ui.window_size()[1] / 2.0) + (line_height / 2.0);
                 ui.set_scroll_y(center_offset);

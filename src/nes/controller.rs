@@ -83,7 +83,7 @@ impl ButtonState {
 }
 
 impl Controller {
-    pub fn update_controller_status(
+    pub fn update_keys_pressed(
         &mut self,
         rl: &RaylibHandle,
         mappings: Option<KeyboardMappings>,
