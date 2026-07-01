@@ -1,6 +1,6 @@
 use std::{collections::HashMap, ffi::OsString};
 
-use crate::nes::cpu::RegFile6502;
+use crate::{SCREEN_SIZE, nes::cpu::RegFile6502};
 
 
 pub struct FrameState {
@@ -62,10 +62,19 @@ impl Default for ChrBanks {
     }
 }
 
+pub struct Nametables(pub [u8; 256 * 240 * 4 * 4]);
+
+impl Default for Nametables {
+    fn default() -> Self {
+        Self([0u8; 256 * 240 * 4 * 4])
+    }
+}
+
 #[derive(Default)]
 pub struct PpuInfo {
     pub chr_banks: ChrBanks,
     pub palettes: [[[u8; 4]; 4]; 8],
+    pub nametables: Nametables,
     pub selected_palette: u16,
     pub ppu_regs: String,
     pub toggle_mapper: bool,

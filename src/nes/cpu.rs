@@ -91,7 +91,7 @@ impl Flag6502 {
 pub struct State6502 {
     pub addr_abs: u16,
     pub addr_rel: i16,
-    pub cycles_left: u8,
+    pub cycles_left: u16,
     pub fetched: u8,
     pub last_opcode: u8,
     pub clock_counter: u64,
@@ -252,7 +252,7 @@ impl Cpu {
             INSTRUCTION_LUT[self.state.last_opcode as usize]
         };
 
-        self.state.cycles_left = ins.n_cycles;
+        self.state.cycles_left = ins.n_cycles as u16;
 
         let nes_ref = unsafe {
             // let _span = tracy_client::span!("Weird place");

@@ -4,7 +4,7 @@ use raylib::ffi::KeyboardKey;
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};
 
-use crate::{emu_loop::AppCtx, nes::{Nes, NesError, instruction_set::Instruction6502}, ui::framestate::FileAction};
+use crate::{emu_loop::AppCtx, nes::{Nes, NesError, instruction_set::Instruction6502}};
 
 
 pub fn load_rom_dialog() -> Option<OsString> {

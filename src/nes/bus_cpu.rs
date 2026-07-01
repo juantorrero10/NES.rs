@@ -185,8 +185,7 @@ impl BusCpu {
                     } else {
                         return match addr {
                             0x4000..=0x4014 => {
-                                self.fake_value = 0;
-                                Ok(Memory(&mut self.fake_value))
+                                Ok(OpenBus)
                             }
                             0x4015 => Ok(HardwareIntercept {
                                 event: NesEvent::ApuReadFrom(addr),

@@ -14,7 +14,10 @@ use ringbuf::{SharedRb, storage::Heap, traits::Consumer, wrap::caching::Caching}
 use crate::{
     FRAME_ELAPSED, MAX_SLEEP_TIME,
     nes::{Nes, NesError},
-    ui::{AppUI, framestate::{FileAction, FrameState}},
+    ui::{
+        AppUI,
+        framestate::{FileAction, FrameState},
+    },
     utils,
 };
 
@@ -46,7 +49,7 @@ pub fn nes_loop(mut ctx: Box<AppCtx>) -> Result<(), Box<dyn Error>> {
     }
 
     while !ctx.ui.raylib_handle().window_should_close() {
-        let nanos_since_last_frame = last_frame_drawn.elapsed().as_nanos();
+        let mut nanos_since_last_frame = last_frame_drawn.elapsed().as_nanos();
 
         // Theres a lot of time to spare until next frame -> SLEEP
         // Otherwise spin loop until frame
@@ -74,17 +77,19 @@ pub fn nes_loop(mut ctx: Box<AppCtx>) -> Result<(), Box<dyn Error>> {
                 &mut state.ppu_info.selected_palette,
                 &mut frame_new_info,
                 &mut update_canvas,
-                &mut state.ppu_info.toggle_mapper,
+                &mut state.ppu_info.toggle_mapper
             )?;
 
-            update_state(&mut ctx,  &mut state, frame_new_info, update_canvas);
+            update_state(&mut ctx, &mut state, frame_new_info, update_canvas);
 
             let old_page = state.memory_editor.current_page;
 
             ctx.ui.update(&mut state);
-            
+
+            // log::info!("Drawn!, t0: {:.2} ms", (last_frame_drawn.elapsed().as_nanos() as f32) / 1_000_000.0);
+
             let changed = old_page != state.memory_editor.current_page;
-            
+
             apply_changes(&mut ctx, &mut state, changed)?;
 
             frame_count += 1;
@@ -94,13 +99,24 @@ pub fn nes_loop(mut ctx: Box<AppCtx>) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn update_state(ctx: &mut AppCtx, state: &mut FrameState, frame_new_info: bool, update_canvas: bool) {
+fn update_state(
+    ctx: &mut AppCtx,
+    state: &mut FrameState,
+    frame_new_info: bool,
+    update_canvas: bool,
+) {
     if frame_new_info {
-            ctx.ui.update_game_screen(ctx.nes.ppu.get_front_screen());
-            state.show_press_start_msg = !ctx.nes.ppu.screen_not_null();
-        }
+        ctx.ui.update_game_screen(ctx.nes.ppu.get_front_screen());
+        state.show_press_start_msg = !ctx.nes.ppu.screen_not_null();
+    }
 
     state.clear();
+
+    if ctx.ui.nametable_window_shown() {
+        let nes_ptr = std::ptr::from_mut(&mut ctx.nes);
+        ctx.nes.ppu.debug_update_nametables(&mut state.ppu_info.nametables.0, nes_ptr);
+        ctx.ui.update_nametables(&state.ppu_info.nametables.0);
+    }    
 
     if frame_new_info && state.dev_mode {
         state.clear_debug();
@@ -129,14 +145,28 @@ fn update_state(ctx: &mut AppCtx, state: &mut FrameState, frame_new_info: bool, 
         );
         state.memory_editor.paged_changed = true;
         if state.ppu_info.toggle_mapper {
-            state.ppu_info.display_mapper_info = ctx.nes.mapper.debug_information(&mut state.ppu_info.mapper_info);
+            state.ppu_info.display_mapper_info = ctx
+                .nes
+                .mapper
+                .debug_information(&mut state.ppu_info.mapper_info);
         } else {
-            ctx.nes.ppu.debug_format_registers(&mut state.ppu_info.ppu_regs);
+            ctx.nes
+                .ppu
+                .debug_format_registers(&mut state.ppu_info.ppu_regs);
         }
     }
 }
 
-fn apply_changes(ctx: &mut AppCtx, state: &mut FrameState, memory_editor_page_changed: bool) -> Result<(), NesError> {
+fn apply_changes(
+    ctx: &mut AppCtx,
+    state: &mut FrameState,
+    mut memory_editor_page_changed: bool,
+) -> Result<(), NesError> {
+    if let Some((a, v)) = state.memory_editor.modify_byte {
+        ctx.nes.write(a, v)?;
+        memory_editor_page_changed = true;
+    }
+
     if memory_editor_page_changed {
         utils::get_mem_page(
             state.memory_editor.current_page,
@@ -144,17 +174,15 @@ fn apply_changes(ctx: &mut AppCtx, state: &mut FrameState, memory_editor_page_ch
             &mut state.memory_editor.page_data,
         );
     }
-    
-    if let Some((a, v)) = state.memory_editor.modify_byte {
-        ctx.nes.ppu_write(a, v);
-    }
 
     ctx.nes.apu.options = state.audio.clone();
     ctx.nes.ppu.options.hide_overscan_region = state.video.hide_overscan_region;
 
     ctx.nes.handle_file_action(&state.file_action)?;
     if let FileAction::LoadROM(path) = &state.file_action {
-        ctx.ui.raylib_handle().set_window_title(ctx.ui.raylib_thread(), &utils::get_title(path)?);  
+        ctx.ui
+            .raylib_handle()
+            .set_window_title(ctx.ui.raylib_thread(), &utils::get_title(path)?);
     }
 
     ctx.breakpoint = state.dissasembly.bkpt;

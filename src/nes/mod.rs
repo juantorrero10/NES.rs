@@ -1,10 +1,5 @@
 use std::{
-    env,
-    error::Error,
-    ffi::{OsString},
-    fs,
-    io::{Read, Write},
-    path::{Path},
+    env, error::Error, ffi::OsString, fs, io::{Read, Write}, path::{Path, PathBuf},
 };
 use thiserror::Error;
 
@@ -39,7 +34,6 @@ pub struct Nes {
     pub controller: Controller,
     pub mapper: Box<dyn Mapper>,
     mapper_id: u8,
-    oam_dma_buffer: [u8; 256],
     ppu_cpu_clock_frequency: u8,
     save_file_path: OsString,
 
@@ -70,7 +64,7 @@ pub enum NesError {
 type Result<T> = std::result::Result<T, NesError>;
 
 impl Nes {
-    pub fn new(game_file_path: &OsString, audio_producer: AudioProducer) -> Result<Self> {
+    pub fn new(game_file_path: &OsString, change_dir: &Path, audio_producer: AudioProducer) -> Result<Self> {
         let (mapper_id, mapper) = game_rom::load_rom(game_file_path)?;
         let cpu = Cpu::new();
         let bus_cpu = BusCpu::new();
@@ -78,6 +72,8 @@ impl Nes {
         let apu = Apu::new(audio_producer, EMU_SAMPLE_RATE);
         let controller = Controller::default();
         let bus_ppu = BusPpu::new();
+
+        std::env::set_current_dir(change_dir)?;
 
         Ok(Nes {
             bus_cpu,
@@ -88,9 +84,8 @@ impl Nes {
             controller,
             mapper,
             mapper_id,
-            oam_dma_buffer: [0u8; 256],
             ppu_cpu_clock_frequency: 0,
-            save_file_path: Self::default_save_file_name(game_file_path)?,
+            save_file_path:  Self::default_save_file_name(game_file_path)?,
             #[cfg(feature = "log")]
             log: false,
         })
@@ -336,12 +331,21 @@ impl Nes {
                 Ok(None)
             }
             NesEvent::OAMDMATransfer(addr_start) => {
+                // Stall CPU
+                let stal_cycles = match self.cpu.state.clock_counter % 2 != 0{
+                    true => 514,
+                    false => 513
+                };
+                self.cpu.state.cycles_left += stal_cycles;
+
                 let page = (addr_start as u16) << 8;
+                let (oam, oam_len) = self.ppu.event_oam_dma_transfer();
+                let oam = unsafe {
+                    std::slice::from_raw_parts_mut(oam, oam_len)
+                };
                 for i in 0..256 {
-                    self.oam_dma_buffer[i] = self.read(page + i as u16)?;
+                    oam[i] = self.read(page + i as u16)?;
                 }
-                self.ppu
-                    .event_oam_dma_transfer(self.oam_dma_buffer.as_slice())?;
                 Ok(None)
             }
             NesEvent::PpuRegReadFrom(r) => Ok(Some(self.ppu.event_cpu_has_read(r, instance)?)),
@@ -370,7 +374,7 @@ impl Nes {
         save_path.push("savefiles");
 
         if !save_path.exists() {
-            std::fs::create_dir_all(&save_path)?;
+            std::fs::create_dir_all(save_path.clone());
         }
 
         save_path.push(file_name);
@@ -389,6 +393,7 @@ impl Nes {
             log::info!("Game does not support saving.");
             return Ok(());
         }
+
         let mut save_file = match std::fs::File::open(path) {
             Ok(s) => s,
             Err(e) => {

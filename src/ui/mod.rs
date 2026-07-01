@@ -114,6 +114,7 @@ struct RaylibInfo {
     game_texture: RenderTexture2D,
     chr_bank0: RenderTexture2D,
     chr_bank1: RenderTexture2D,
+    nametables: RenderTexture2D,
     audio_device: RaylibAudio,
     audio_stream: raylib::ffi::AudioStream
 }
@@ -125,6 +126,7 @@ impl RaylibInfo {
         texture: RenderTexture2D, /*, screen_data: Vec<u8>*/
         c0: RenderTexture2D,
         c1: RenderTexture2D,
+        nametables: RenderTexture2D,
         audio_stream: raylib::ffi::AudioStream,
         audio_device: RaylibAudio,
     ) -> Self {
@@ -134,6 +136,7 @@ impl RaylibInfo {
             game_texture: texture,
             chr_bank0: c0,
             chr_bank1: c1,
+            nametables,
             audio_device,
             audio_stream
         }
@@ -199,6 +202,7 @@ pub struct AppUI {
     addr_disassm_buffer: String,
     addr_memedit_buffer: String,
     mod_memedit_buffer: String,
+    show_nametable_window: bool,
 }
 
 impl AppUI {
@@ -259,9 +263,14 @@ impl AppUI {
             .load_render_texture(&thread, 128, 128)
             .expect("Couldnt make texture");
 
+        let nametables = rl
+            .load_render_texture(&thread, 512, 480)
+            .expect("Couldnt make texture");
+
         screen.set_texture_filter(&thread, raylib::ffi::TextureFilter::TEXTURE_FILTER_POINT);
         c0.set_texture_filter(&thread, raylib::ffi::TextureFilter::TEXTURE_FILTER_POINT);
         c1.set_texture_filter(&thread, raylib::ffi::TextureFilter::TEXTURE_FILTER_POINT);
+        nametables.set_texture_filter(&thread, raylib::ffi::TextureFilter::TEXTURE_FILTER_POINT);
 
         let audio = RaylibAudio::init_audio_device().expect("Could not initialize audio device.");
         unsafe { SetAudioStreamBufferSizeDefault(AUDIO_BUFFER_SIZE as i32); }
@@ -278,13 +287,14 @@ impl AppUI {
         Self {
             ctx,
             renderer,
-            raylib: RaylibInfo::new(rl, thread, screen, c0, c1, stream, audio),
+            raylib: RaylibInfo::new(rl, thread, screen, c0, c1, nametables, stream, audio),
             text_buffer: String::with_capacity(128),
             addr_disassm_buffer: String::with_capacity(5),
             addr_memedit_buffer: "0000".to_owned(),
             mod_memedit_buffer: String::with_capacity(32),
             fonts: [f0, f1, f2],
             theme: t,
+            show_nametable_window: false,
         }
     }
 
@@ -442,9 +452,16 @@ impl AppUI {
                     {
                         st.audio.dmc_mut ^= true;
                     }
-                    
 
                 }
+                
+                if let Some(_menu_debug) = ui.begin_menu("Debug") {
+                    if ui.menu_item("View Nametables") {
+                        self.show_nametable_window = true;
+                    }
+                }
+                    
+
 
                 // 4. The "Window" Dropdown (Toggle Debuggers, PPU Viewer, Log Windows)
                 if let Some(_menu_window) = ui.begin_menu("Window") {
@@ -474,6 +491,51 @@ impl AppUI {
             | imgui::WindowFlags::NO_COLLAPSE
             | imgui::WindowFlags::NO_SCROLLBAR
             | imgui::WindowFlags::NO_BRING_TO_FRONT_ON_FOCUS;
+
+
+        if self.show_nametable_window {
+            let display_size = ui.io().display_size; 
+    
+            // 2. Define the desired size for your viewer (e.g., half the screen width/height)
+            let window_w = display_size[0] * 0.6;
+            let window_h = display_size[1] * 0.85;
+
+            // 3. Calculate a centered position so it isn't cropped out on the edges
+            let pos_x = (display_size[0] - window_w) * 0.6;
+            let pos_y = (display_size[1] - window_h) * 0.85;
+
+            if let Some(_window) = ui.window("Nametable Viewer")
+                .opened(&mut self.show_nametable_window)
+                // Set the explicit centered position on its first appearance
+                .position([pos_x, pos_y], imgui::Condition::Appearing)
+                .size([window_w, window_h], imgui::Condition::Appearing)
+                .begin() 
+            {
+                // --- Place your actual PPU Nametable rendering logic here ---
+                let nametable_aspect = 256.0 / 240.0;
+
+                let content_size = ui.content_region_avail();
+                let nes_aspect = 256.0 / 240.0;
+                let window_aspect = content_size[0] / content_size[1];
+
+                let (draw_w, draw_h) = if window_aspect > nes_aspect {
+                    (content_size[1] * nes_aspect, content_size[1])
+                } else {
+                    (content_size[0], content_size[0] / nes_aspect)
+                };
+
+                let x_offset = (content_size[0] - draw_w) / 2.0;
+                let y_offset = (content_size[1] - draw_h) / 1.8;
+
+                ui.set_cursor_pos([ui.cursor_pos()[0] + x_offset, ui.cursor_pos()[1] + y_offset]);
+
+                imgui::Image::new(
+                    imgui::TextureId::new(self.raylib.nametables.texture().id as usize),
+                    [draw_w, draw_h],
+                )
+                .build(ui);
+            }
+        }
 
         let _t = ui.push_style_color(StyleColor::WindowBg, self.theme.game_screen_bg);
         ui.window("Game")
@@ -678,6 +740,19 @@ impl AppUI {
                 ))
                 .expect("Couldnt swap buffer");
         }
+    }
+
+    pub fn update_nametables(&mut self, nametbls: &[u8]) {
+        self.raylib
+            .nametables
+            .texture_mut()
+            .update_texture(nametbls)
+            .expect("Couldnt swap buffer");
+    }
+
+    #[inline]
+    pub fn nametable_window_shown(&self) -> bool {
+        self.show_nametable_window
     }
 }
 

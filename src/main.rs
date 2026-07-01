@@ -1,11 +1,11 @@
 #![windows_subsystem = "windows"]
 
 use std::{
-    ffi::OsString, path::Path, sync::{Arc, atomic::AtomicBool}
+    ffi::OsString, sync::atomic::AtomicBool, time::Instant
 };
 
 use colored::Colorize;
-use ringbuf::{SharedRb, storage::Heap, traits::Split, wrap::caching::Caching};
+use ringbuf::{SharedRb, traits::Split};
 use simple_logger::SimpleLogger;
 
 use crate::{
@@ -23,7 +23,7 @@ mod nes;
 pub const SCREEN_WIDTH: usize = 256;
 pub const SCREEN_HEIGHT: usize = 240;
 pub const SCREEN_SIZE: usize = SCREEN_WIDTH * SCREEN_HEIGHT * 4;
-pub const AUDIO_BUFFER_SIZE: usize = 733;
+pub const AUDIO_BUFFER_SIZE: usize = 366;
 pub const FRAME_ELAPSED: u128 = 16_639_267;
 pub const MAX_SLEEP_TIME: u128 = 10_000_000;
 pub const EMU_SAMPLE_RATE: u32 = 44100;
@@ -47,7 +47,7 @@ fn nes_init() -> Result<Box<emu_loop::AppCtx>, NesError> {
     let screen_title = utils::get_title(&rom_path)?;
     let mut nes_ctx = Box::new(emu_loop::AppCtx {
         ui: app_init(),
-        nes: Nes::new(&rom_path, tx)?,
+        nes: Nes::new(&rom_path, &utils::get_correct_cwd(),  tx)?,
         audio_consumer: rx,
         is_running: AtomicBool::new(false),
         update_info: AtomicBool::new(false),
@@ -94,7 +94,6 @@ fn main() {
     #[cfg(target_os = "windows")]
     utils::attach_console();
 
-    std::env::set_current_dir(utils::get_correct_cwd()).expect("Could not set the correct CWD");
 
     SimpleLogger::new()
     .with_level(log::LevelFilter::Info)
