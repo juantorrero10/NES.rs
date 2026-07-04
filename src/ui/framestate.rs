@@ -1,4 +1,4 @@
-use std::{collections::HashMap, ffi::OsString};
+use std::{collections::HashMap, ffi::OsString, ops::SubAssign};
 
 use crate::{SCREEN_SIZE, nes::cpu::RegFile6502};
 
@@ -122,9 +122,32 @@ impl Default for DissOptions {
     }
 }
 
+#[derive(Clone, Copy, PartialEq)]
+pub enum MemPage {
+    Cpu(u8),
+    Ppu(u8)
+}
+
+impl MemPage {
+    pub fn dec(&mut self)  {
+        let p = match self {
+            MemPage::Cpu(p) => p,
+            MemPage::Ppu(p) => p,
+        };
+        *p -= 1;
+    }
+    pub fn inc(&mut self)  {
+        let p = match self {
+            MemPage::Cpu(p) => p,
+            MemPage::Ppu(p) => p,
+        };
+        *p += 1;
+    }
+}
+
 pub struct MemEdit {
     pub paged_changed: bool,
-    pub current_page: u8,
+    pub current_page: MemPage,
     pub search_byte_highlight: Option<u8>,
     pub modify_byte: Option<(u16, u8)>,
     pub page_data: [Option<u8>; 256],
@@ -134,7 +157,7 @@ impl Default for MemEdit {
     fn default() -> Self {
         Self {
             paged_changed: false,
-            current_page: 0,
+            current_page: MemPage::Cpu(0),
             search_byte_highlight: None,
             modify_byte: None,
             page_data: [None; 256],

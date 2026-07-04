@@ -1,4 +1,11 @@
+use crate::{nes::cpu::Cpu, ui::framestate::MemPage};
+
 use super::*;
+
+enum PageType {
+    Cpu,
+    Ppu
+}
 
 pub fn update(
     ui: &imgui::Ui,
@@ -17,6 +24,17 @@ pub fn update(
             $ui.text_colored($col, &text_buffer)
         };
     }
+    let mut page_type = if let MemPage::Cpu(_) = st.memory_editor.current_page {
+        PageType::Cpu
+    } else {
+        PageType::Ppu
+    };
+
+    let page_num = match st.memory_editor.current_page {
+        MemPage::Cpu(p) => p,
+        MemPage::Ppu(p) => p,
+    };
+
     ui.dummy([0.0, dims.window_h * 0.004]);
     ui.indent_by(dims.window_w * 0.007);
     ui.text_colored(theme.title, "MEMORY EDITOR");
@@ -40,13 +58,17 @@ pub fn update(
         st.memory_editor.paged_changed = true;
         match u16::from_str_radix(addr_buffer, 16) {
             Ok(address) => {
-                st.memory_editor.current_page = (address >> 8) as u8;
+                st.memory_editor.current_page = if let PageType::Cpu = page_type {
+                    MemPage::Cpu((address >> 8) as u8)
+                } else {
+                    MemPage::Ppu((address >> 8) as u8)
+                };
                 st.memory_editor.search_byte_highlight = Some((address & 0x00FF) as u8)
             }
             Err(_) => {
                 // Revert the text buffer back to the valid page if parsing fails
                 addr_buffer.clear();
-                write!(addr_buffer, "{:04X}", st.memory_editor.current_page).expect("Fmt failed");
+                write!(addr_buffer, "{:04X}", (page_num as u16) << 8).expect("Fmt failed");
             }
         }
     }
@@ -57,15 +79,15 @@ pub fn update(
     ui.set_next_item_width(ui.window_size()[0] * 0.07);
     let _t = ui.push_style_color(StyleColor::Button, theme.button);
     if ui.button("<") {
-        if st.memory_editor.current_page > 0 {
-            st.memory_editor.current_page -= 1;
+        if page_num > 0 {
+            st.memory_editor.current_page.dec();
             // Directly update the text field's buffer with the new address page
             addr_buffer.clear();
             st.memory_editor.search_byte_highlight = None;
             write!(
                 addr_buffer,
                 "{:04X}",
-                (st.memory_editor.current_page as u16) << 8
+                ((page_num - 1) as u16) << 8
             )
             .expect("Fmt failed");
             st.memory_editor.paged_changed = true;
@@ -74,15 +96,19 @@ pub fn update(
     ui.set_next_item_width(ui.window_size()[0] * 0.07);
     ui.same_line();
     if ui.button(">") {
-        if st.memory_editor.current_page < 0xFF {
-            st.memory_editor.current_page += 1;
+        let max = match page_type {
+            PageType::Cpu => 0xFF,
+            PageType::Ppu => 0x3F
+        };
+        if page_num < max {
+            st.memory_editor.current_page.inc();
             // Directly update the text field's buffer with the new address page
             addr_buffer.clear();
             st.memory_editor.search_byte_highlight = None;
             write!(
                 addr_buffer,
                 "{:04X}",
-                (st.memory_editor.current_page as u16) << 8
+                ((page_num + 1) as u16) << 8
             )
             .expect("Fmt failed");
             st.memory_editor.paged_changed = true;
@@ -130,6 +156,39 @@ pub fn update(
     _p.pop();
     _pi.pop();
 
+    ui.same_line();
+    let mut cursor_pos = ui.cursor_pos();
+    cursor_pos[0] += ui.content_region_avail()[0] * 0.2;
+    ui.set_cursor_pos(cursor_pos);
+
+    {
+        let _t = ui.push_style_var(imgui::StyleVar::ItemSpacing([0.0, 0.0]));
+        let button_size = [50.0, 20.0];
+        let cols = match page_type {
+            PageType::Cpu => (theme.highlight, theme.darker_bg),
+            PageType::Ppu => (theme.darker_bg, theme.highlight),
+        };
+
+        let _t1 = ui.push_style_color(StyleColor::Button, cols.0);
+        if ui.button_with_size("CPU", button_size) {
+            st.memory_editor.current_page = MemPage::Cpu(0);
+            addr_buffer.clear();
+            write!(addr_buffer, "0000").expect("Fmt failed");
+        }
+        _t1.end();
+        let _t1 = ui.push_style_color(StyleColor::Button, cols.1);
+        ui.same_line();
+        if ui.button_with_size("PPU", button_size) {
+            st.memory_editor.current_page = MemPage::Ppu(0);
+            addr_buffer.clear();
+            write!(addr_buffer, "0000").expect("Fmt failed");
+        }
+        _t1.end()
+        
+    }
+
+    ui.dummy([0.0, ui.content_region_avail()[1] * 0.05]);
+
 
     ui.child_window("mem_page_scroll")
         .size([0.0, ui.window_size()[1] * 0.95])
@@ -138,7 +197,7 @@ pub fn update(
         .build(|| {
             fmt_text_colored!(ui, theme.label, "       00 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F 10 11 12 13 14 15 16 17 18 19 1A 1B 1C 1D 1E 1F",);
             for i in 0..8 {
-                fmt_text_colored!(ui, theme.label, "${:04X}: ", ((st.memory_editor.current_page as u16) << 8) + (i as u16) * 32);
+                fmt_text_colored!(ui, theme.label, "${:04X}: ", ((page_num as u16) << 8) + (i as u16) * 32);
                 let _no_spacing;
                 unsafe { _no_spacing = ui.push_style_var(StyleVar::ItemSpacing([0.0, ui.style().item_spacing[1]])); }
                 ui.same_line();

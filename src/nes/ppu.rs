@@ -1112,6 +1112,7 @@ impl Ppu {
 
                 let name_table = data as u16 & 3;
                 self.vram.t = (self.vram.t & !VRAM_NAMETABLE_MASK) | (name_table << 10);
+                self.debug_save_scroll();
             }
             Mask => {
                 self.mask = data;
@@ -1257,8 +1258,9 @@ impl Ppu {
     pub fn debug_extract_palettes(&mut self, out: &mut [[[u8; 4]; 4]; 8], nes: *mut Nes) {
         for palette_idx in 0..8 {
             for color_idx in 0..4 {
-                let system_color_idx =
+                let mut system_color_idx =
                     self.debug_read(ADDR_PAL_START + 4 * palette_idx + color_idx, nes) as usize;
+                system_color_idx &= 0x3f;
                 out[palette_idx as usize][color_idx as usize][0..3]
                     .copy_from_slice(NES_COLOR_PALETTE[system_color_idx].as_slice());
                 out[palette_idx as usize][color_idx as usize][3] = 255;

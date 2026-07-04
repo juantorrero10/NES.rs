@@ -4,7 +4,7 @@ use raylib::ffi::KeyboardKey;
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};
 
-use crate::{emu_loop::AppCtx, nes::{Nes, NesError, instruction_set::Instruction6502}};
+use crate::{emu_loop::AppCtx, nes::{Nes, NesError, instruction_set::Instruction6502}, ui::framestate::MemPage};
 
 
 pub fn load_rom_dialog() -> Option<OsString> {
@@ -113,10 +113,16 @@ pub fn get_dissasembly(
     }
 }
 
-pub fn get_mem_page(page_num: u8, nes: &mut Nes, out_buff: &mut [Option<u8>]) {
-    for j in 0..256 {
-        out_buff[j] = nes.debug_read((page_num as u16) << 8 | j as u16).ok()
-    }
+pub fn get_mem_page(page: MemPage, nes: &mut Nes, out_buff: &mut [Option<u8>]) {
+    let page_iter = (0..256).into_iter();
+    match page {
+        MemPage::Cpu(p) => {
+            page_iter.for_each(|i| out_buff[i as usize] = nes.debug_read((p as u16) << 8 | i).ok());
+        },
+        MemPage::Ppu(p) => {
+            page_iter.for_each(|i| out_buff[i as usize] = Some(nes.ppu_debug_read((p as u16) << 8 | i)));
+        },
+    };
 }
 
 pub fn get_ppu_info(

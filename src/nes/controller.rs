@@ -8,6 +8,7 @@ pub struct Controller {
     shift_register: u8,
     polling_set_high: bool,
     open_bus: u8,
+    port_number: u8
 }
 
 #[derive(Default, Debug)]
@@ -41,16 +42,10 @@ impl Index<usize> for ButtonState {
 
 impl IndexMut<usize> for ButtonState {
     fn index_mut(&mut self, index: usize) -> &mut Self::Output {
-        match index & 0x07 {
-            0 => &mut self.a,
-            1 => &mut self.b,
-            2 => &mut self.select,
-            3 => &mut self.start,
-            4 => &mut self.up,
-            5 => &mut self.down,
-            6 => &mut self.left,
-            7 => &mut self.right,
-            _ => unreachable!(),
+        unsafe {
+            (std::ptr::from_ref(&self[index & 0x07]) as *mut bool)
+                .as_mut()
+                .expect("Failed to mutably index the controller")
         }
     }
 }
@@ -83,21 +78,35 @@ impl ButtonState {
 }
 
 impl Controller {
-    pub fn update_keys_pressed(
-        &mut self,
-        rl: &RaylibHandle,
-        mappings: Option<KeyboardMappings>,
-    ) {
+    pub fn update_keys_pressed(&mut self, rl: &RaylibHandle, mappings: Option<KeyboardMappings>) {
         let mappings = mappings.unwrap_or_default();
         for (i, key) in mappings.0.into_iter().enumerate() {
             self.button_state[i] = rl.is_key_down(key);
         }
     }
 
+    #[inline(always)]
+    pub fn set_port_number(&mut self, p: u8) {
+        self.port_number = p;
+    }
+
     pub fn event_cpu_has_read(&mut self, addr: u16) -> u8 {
-        if addr != 0x4016 {
-            return 0;
-        }
+        match self.port_number {
+            0 => {
+                if addr != 0x4016 {
+                    return 0xC0;
+                }
+            },
+            1 => {
+                if addr != 0x4017 {
+                    return 0xC0;
+                }
+            },
+            _ => {
+                return 0xC0;
+            }
+        };
+
         if self.polling_set_high {
             self.shift_register = self.button_state.as_shift_register();
             return self.button_state.a as u8 | 0x40;
