@@ -248,19 +248,32 @@ impl Nes {
         Ok(())
     }
 
-    pub fn step_frame(&mut self, break_point: Option<u16>) -> Result<bool> {
-        // let _span = tracy_client::span!("Step frame");
-        loop {
+    #[inline(always)]
+    pub fn drain_cpu_cycles(&mut self) -> Result<()> {
+        while self.cpu.state.cycles_left != 0 {
             self.clock(None)?;
-            if let Some(a) = break_point
-                && a == self.cpu.get_pc()
-            {
-                return Ok(true);
-            }
-            if self.ppu.frame_complete {
-                break;
-            }
         }
+        Ok(())
+    }
+
+    #[inline(always)]
+    pub fn step_instruction(&mut self) -> Result<()> {
+        if self.cpu.state.cycles_left == 0 {
+            self.clock(None)?;
+        }
+        self.drain_cpu_cycles()
+    }
+
+    #[inline(always)]
+    pub fn step_frame(&mut self, break_point: Option<u16>) -> Result<bool> {
+        while !self.ppu.frame_complete {
+            self.clock(None)?;
+            if let Some(a) = break_point && self.cpu.registers.pc == a {
+                self.drain_cpu_cycles()?;
+                return Ok(true)
+            } 
+        }
+        self.ppu.frame_complete = false;
         Ok(false)
     }
 
@@ -304,10 +317,6 @@ pub enum NesEvent {
     ApuReadFrom(u16),
 }
 
-#[derive(Debug)]
-pub enum MapperInfoReq {
-    PpuAddressBus,
-}
 
 // Event logic
 impl Nes {
@@ -390,7 +399,7 @@ impl Nes {
         };
 
         if !self.mapper.is_sram_battery_backed() {
-            log::info!("Game does not support saving.");
+            log::warn!("Game does not support saving.");
             return Ok(());
         }
 

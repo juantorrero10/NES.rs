@@ -15,7 +15,7 @@ pub enum PpuNameTblMirroring {
 #[repr(packed)]
 #[derive(Debug)]
 #[allow(unused)]
-struct NesGameHeader {
+struct INESHeader {
     magic: u32,
     prg_rom_chunks: u8,
     chr_rom_chunks: u8,
@@ -40,6 +40,8 @@ pub enum ROMErr {
     #[error("{0}")]
     PostCardError(#[from] postcard::Error),
 }
+
+
 use std::{
     ffi::OsString,
     fs::File,
@@ -51,15 +53,14 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::nes::{
-    game_rom::ROMErr::MapperNotImplemented,
-    mappers::{Mapper, mmc1::MMC1, mmc3::MMC3, nrom::NROM},
+    game_rom::ROMErr::MapperNotImplemented, mappers::{Mapper, axrom::AxROM, cnrom::CNROM, mmc1::MMC1, mmc3::MMC3, nrom::NROM, uxrom::UxROM},
 };
 
 pub fn load_rom(filepath: &OsString) -> Result<(u8, Box<dyn Mapper>)> {
     let mut f = File::open(filepath)?;
-    let mut header = [0u8; size_of::<NesGameHeader>()];
+    let mut header = [0u8; size_of::<INESHeader>()];
     f.read(header.as_mut_slice())?;
-    let header: NesGameHeader = unsafe { mem::transmute(header) };
+    let header: INESHeader = unsafe { mem::transmute(header) };
     log::info!("Trying to load {:?}:\n{:#?}", filepath, header);
 
     if header.magic != NES_MAGIC {
@@ -125,6 +126,16 @@ fn create_mapper(
             chr_rom,
             battery_backed
         ))),
+        2 => Ok(Box::new(UxROM::new(
+            prg_rom,
+            chr_rom,
+            mirroring
+        ))),
+        3 => Ok(Box::new(CNROM::new(
+            prg_rom,
+            chr_rom,
+            mirroring
+        ))),
         4 => Ok(Box::new(MMC3::new(
             prg_rom,
             prg_ram_size,
@@ -132,8 +143,17 @@ fn create_mapper(
             mirroring,
             battery_backed,
         ))),
+        7 => Ok(Box::new(AxROM::new(
+            prg_rom
+        ))),
         _ => Err(MapperNotImplemented(mapper_id)),
     }
+}
+
+macro_rules! snap {
+    ($mapper:ty, $snapshot:expr) => {
+        Ok(Box::new({let m: $mapper = postcard::from_bytes($snapshot)?; m}))   
+    };
 }
 
 pub fn create_mapper_from_snapshot(
@@ -141,9 +161,12 @@ pub fn create_mapper_from_snapshot(
     snap: &[u8],
 ) -> Result<Box<dyn Mapper>> {
     match id {
-        0 => Ok(Box::new({ let m: NROM = postcard::from_bytes(snap)?; m })),
-        1 => Ok(Box::new({ let m: MMC1 = postcard::from_bytes(snap)?; m })),
-        4 => Ok(Box::new({ let m: MMC3 = postcard::from_bytes(snap)?; m })),
+        0 => snap!(NROM, snap),
+        1 => snap!(MMC1, snap),
+        2 => snap!(UxROM, snap),
+        3 => snap!(CNROM, snap),
+        4 => snap!(MMC3, snap),
+        7 => snap!(AxROM, snap),
         _ => Err(MapperNotImplemented(id))
     }
 }

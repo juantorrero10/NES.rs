@@ -1,4 +1,7 @@
-use std::{fmt::Write, time::Instant};
+use std::{
+    fmt::Write,
+    time::{Duration, Instant},
+};
 
 use thiserror::Error;
 
@@ -97,7 +100,7 @@ impl BusPpu {
                         1 => 0,
                         2 => 0x400,
                         3 => 0x400,
-                        _ => panic!("{} {} {}", name_table_idx, addr_byte, addr),
+                        _ => unreachable!(),
                     },
                     PpuNameTblMirroring::OnScreenLO => match name_table_idx {
                         0 | 1 | 2 | 3 => 0,
@@ -204,10 +207,10 @@ pub struct Ppu {
     pub scanline: isize,
     pub cycle: usize,
 
-    screen_data_buffer0: Vec<u8>,
-    screen_data_buffer1: Vec<u8>,
+    pub t0: Instant,
+    pub last: Instant,
 
-    current_buffer_selected: bool,
+    screen_data_buffer: Vec<u8>,
 
     debug_last_scroll: (u16, u16),
 
@@ -416,18 +419,7 @@ impl Ppu {
 
         let mut rgb_color = NES_COLOR_PALETTE[system_color_idx as usize];
 
-        if (self.mask & MASK_EMPHASIZE_RED) != 0 {
-            Self::penalize_channel(&mut rgb_color[1], 0.743);
-            Self::penalize_channel(&mut rgb_color[2], 0.743);
-        }
-        if (self.mask & MASK_EMPHASIZE_GREEN) != 0 {
-            Self::penalize_channel(&mut rgb_color[0], 0.743);
-            Self::penalize_channel(&mut rgb_color[2], 0.743);
-        }
-        if (self.mask & MASK_EMPHASIZE_BLUE) != 0 {
-            Self::penalize_channel(&mut rgb_color[0], 0.743);
-            Self::penalize_channel(&mut rgb_color[1], 0.743);
-        }
+        self.apply_mask_filters(&mut rgb_color);
 
         self.set_pixel(self.cycle, self.scanline, rgb_color);
 
@@ -437,6 +429,18 @@ impl Ppu {
             self.scanline += 1;
             if self.scanline > SCANLINE_HEIGHT {
                 self.scanline = -1;
+                let secs = self.t0.elapsed().as_secs();
+                if secs != 0 {
+                    self.t0 += Duration::from_secs(secs);
+                    // Clear screen
+                    //clearscreen::clear().unwrap();
+                }
+                // log::info!(
+                //     "New frame!: {:07.3} ms, diff {:.3}",
+                //     (self.t0.elapsed().as_micros() as f32) / 1000.0,
+                //     (self.last.elapsed().as_micros() as f32) / 1000.0
+                // );
+                self.last = Instant::now();
                 self.frame_complete = true;
                 // log::info!("new");
                 self.is_odd_frame ^= true;
@@ -471,14 +475,39 @@ impl Ppu {
         }
     }
 
+    #[inline]
+    fn apply_mask_filters(&self, input: &mut [u8; 3]) {
+        if (self.mask & MASK_EMPHASIZE_RED) != 0 {
+            Self::penalize_channel(&mut input[1], 0.743);
+            Self::penalize_channel(&mut input[2], 0.743);
+        }
+        if (self.mask & MASK_EMPHASIZE_GREEN) != 0 {
+            Self::penalize_channel(&mut input[0], 0.743);
+            Self::penalize_channel(&mut input[2], 0.743);
+        }
+        if (self.mask & MASK_EMPHASIZE_BLUE) != 0 {
+            Self::penalize_channel(&mut input[0], 0.743);
+            Self::penalize_channel(&mut input[1], 0.743);
+        }
+
+        if self.mask & MASK_GRAYSCALE != 0 {
+            let gray = (input[0] as f32 * 0.299) + (input[1] as f32 * 0.587) + (input[2] as f32 * 0.114);
+            let gray = std::cmp::min(255, gray as u16) as u8;
+            input[0] = gray;
+            input[1] = gray;
+            input[2] = gray;
+        }
+    }
+
     fn scanline_bg_routine(&mut self, nes: *mut Nes) {
         // Guard
         if !self.is_rendering_enabled() {
             return;
         }
 
-        if self.cycle == 0 && self.is_odd_frame && self.scanline == 0 {
-            self.cycle = 1;
+        if self.cycle == 339 && self.is_odd_frame && self.scanline == -1 {
+            self.cycle = 0;
+            self.scanline = 0;
         }
 
         match self.cycle {
@@ -835,7 +864,7 @@ impl Ppu {
 
         let hide_or = self.options.hide_overscan_region;
 
-        let screen = self.back_screen();
+        let screen: &mut [u8] = &mut self.screen_data_buffer;
 
         if hide_or {
             if y < 8 || y > SCREEN_HEIGHT as usize - 8 {
@@ -1013,9 +1042,7 @@ impl PpuRegister {
 impl Ppu {
     pub fn new() -> Self {
         Ppu {
-            screen_data_buffer0: vec![0u8; SCREEN_SIZE],
-            screen_data_buffer1: vec![0u8; SCREEN_SIZE],
-            current_buffer_selected: false,
+            screen_data_buffer: vec![0u8; SCREEN_SIZE],
             oam: OAM {
                 mem: [OAttribute::default(); 64],
                 addr: 0,
@@ -1034,6 +1061,8 @@ impl Ppu {
             status: 0,
             cycle: 0,
             scanline: -1,
+            t0: Instant::now(),
+            last: Instant::now(),
             options: PpuOptions {
                 hide_overscan_region: false,
             },
@@ -1058,24 +1087,7 @@ impl Ppu {
 
         self.oam.addr;
 
-        self.screen_data_buffer0.fill(0);
-        self.screen_data_buffer1.fill(0);
-    }
-
-    #[inline(always)]
-    fn front_screen(&mut self) -> &mut [u8] {
-        match self.current_buffer_selected {
-            false => self.screen_data_buffer0.as_mut_slice(),
-            true => self.screen_data_buffer1.as_mut_slice(),
-        }
-    }
-
-    #[inline(always)]
-    fn back_screen(&mut self) -> &mut [u8] {
-        match self.current_buffer_selected {
-            false => self.screen_data_buffer1.as_mut_slice(),
-            true => self.screen_data_buffer0.as_mut_slice(),
-        }
+        self.screen_data_buffer.fill(0);
     }
 
     pub fn toggle_log(&mut self) {
@@ -1223,23 +1235,15 @@ impl Ppu {
     }
 
     #[inline(always)]
-    pub fn swap_buffers(&mut self) {
-        self.current_buffer_selected ^= true;
-    }
-
-    #[inline(always)]
-    pub fn get_front_screen(&mut self) -> ScreenOutput {
-        let sc = self.front_screen();
+    pub fn get_screen(&mut self) -> ScreenOutput {
+        let sc: &[u8] = &self.screen_data_buffer;
         (sc.as_ptr(), sc.len())
     }
 
     #[inline(always)]
     pub fn screen_not_null(&self) -> bool {
         let safe_offset = 8 * SCREEN_WIDTH;
-        match self.current_buffer_selected {
-            false => self.screen_data_buffer0[safe_offset..=(safe_offset + 3)] != [0, 0, 0, 0],
-            true => self.screen_data_buffer1[safe_offset..=(safe_offset + 3)] != [0, 0, 0, 0],
-        }
+        self.screen_data_buffer[safe_offset..=(safe_offset + 3)] != [0, 0, 0, 0]
     }
 
     #[inline(always)]
@@ -1411,10 +1415,9 @@ impl Ppu {
                         }
 
                         // Add window border
-                        if (px == (end_x as usize - 1)
-                            || px == scroll_x as usize) && in_bounds_y
-                            || ((py == end_y as usize - 1)
-                            || py == scroll_y as usize) && in_bounds_x
+                        if (px == (end_x as usize - 1) || px == scroll_x as usize) && in_bounds_y
+                            || ((py == end_y as usize - 1) || py == scroll_y as usize)
+                                && in_bounds_x
                         {
                             col = [255, 255, 255];
                         }

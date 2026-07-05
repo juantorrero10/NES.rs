@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{nes::game_rom::PpuNameTblMirroring, ui::framestate::PpuInfo};
+use crate::{nes::game_rom::PpuNameTblMirroring};
 
 use super::*;
 

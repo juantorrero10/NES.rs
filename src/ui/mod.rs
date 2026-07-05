@@ -3,7 +3,7 @@ use std::fmt::Write;
 use imgui::{FontId, StyleColor, StyleVar, WindowFlags, sys::ImGuiCond_FirstUseEver};
 use log::info;
 use raylib::{
-    audio::{AudioStream, RaylibAudio}, color::Color, core::{RaylibHandle, RaylibThread}, drawing::{RaylibDraw, RaylibTextureModeExt}, ffi::{GuiDefaultProperty::BACKGROUND_COLOR, IsAudioStreamProcessed, LoadAudioStream, PlayAudioStream, SetAudioStreamBufferSizeDefault, SetWindowIcon, UpdateAudioStream}, texture::{Image, RaylibRenderTexture2D, RaylibTexture2D, RenderTexture2D}
+    audio::{AudioStream, RaylibAudio}, color::Color, core::{RaylibHandle, RaylibThread}, drawing::{RaylibDraw, RaylibTextureModeExt}, ffi::{ConfigFlags::FLAG_WINDOW_ALWAYS_RUN, GuiDefaultProperty::BACKGROUND_COLOR, IsAudioStreamProcessed, LoadAudioStream, PlayAudioStream, SetAudioStreamBufferSizeDefault, SetConfigFlags, SetWindowIcon, UpdateAudioStream}, texture::{Image, RaylibRenderTexture2D, RaylibTexture2D, RenderTexture2D}
 };
 use raylib_imgui_rs::Renderer;
 
@@ -219,6 +219,10 @@ impl AppUI {
             .resizable()
             .build();
         //rl.set_target_fps(60);
+
+        unsafe { 
+            SetConfigFlags(FLAG_WINDOW_ALWAYS_RUN as u32) 
+        };
 
         let mut ctx = imgui::Context::create();
         ctx.io_mut().config_flags |= imgui::ConfigFlags::DOCKING_ENABLE;

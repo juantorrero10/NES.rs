@@ -3,8 +3,7 @@ use core::f32;
 use ringbuf::traits::Producer;
 
 use crate::{
-    emu_loop::AudioProducer,
-    nes::{Nes, NesError}, ui,
+    NES_CPU_HZ, emu_loop::AudioProducer, nes::{Nes, NesError}, ui,
 };
 
 pub struct Apu {
@@ -177,7 +176,6 @@ const DMC_PERIOD_LUT: [u16; 16] = [
     428, 380, 340, 320, 286, 254, 226, 214, 190, 160, 142, 128, 106, 84, 72, 54,
 ];
 
-const NES_CPU_HZ: f64 = 1_789_773.0;
 
 impl Apu {
     pub fn new(aup: AudioProducer, sample_rate: u32) -> Self {
@@ -280,6 +278,7 @@ impl Apu {
             }
         }
 
+        // Downsampling: 1.79Mz -> 44.1Hz
         self.cycle_accumulator += 1.0;
         if self.cycle_accumulator < self.cycles_per_sample {
             return;

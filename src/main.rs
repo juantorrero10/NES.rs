@@ -24,9 +24,9 @@ pub const SCREEN_WIDTH: usize = 256;
 pub const SCREEN_HEIGHT: usize = 240;
 pub const SCREEN_SIZE: usize = SCREEN_WIDTH * SCREEN_HEIGHT * 4;
 pub const AUDIO_BUFFER_SIZE: usize = 366;
-pub const FRAME_ELAPSED: u128 = 16_639_267;
-pub const MAX_SLEEP_TIME: u128 = 10_000_000;
+pub const FRAME_ELAPSED_NANOS: u128 = 16_639_261;
 pub const EMU_SAMPLE_RATE: u32 = 44100;
+pub const NES_CPU_HZ: f64 = 1_789_773.0;
 
 
 fn nes_init() -> Result<Box<emu_loop::AppCtx>, NesError> {
@@ -42,7 +42,7 @@ fn nes_init() -> Result<Box<emu_loop::AppCtx>, NesError> {
             None => std::process::exit(1),
         },
     };
-    let audio: SharedRb<ringbuf::storage::Heap<f32>> = SharedRb::new(AUDIO_BUFFER_SIZE);
+    let audio: SharedRb<ringbuf::storage::Heap<f32>> = SharedRb::new((EMU_SAMPLE_RATE as f64 * (FRAME_ELAPSED_NANOS as f64 / 1_000_000_000.0) * 2.0) as usize);
     let (tx, rx) = audio.split();
     let screen_title = utils::get_title(&rom_path)?;
     let mut nes_ctx = Box::new(emu_loop::AppCtx {
@@ -52,7 +52,6 @@ fn nes_init() -> Result<Box<emu_loop::AppCtx>, NesError> {
         is_running: AtomicBool::new(false),
         update_info: AtomicBool::new(false),
         step_instruction: AtomicBool::new(false),
-        breakpoint: None,
     });
     nes_ctx.ui.raylib_handle().set_window_title(nes_ctx.ui.raylib_thread(), &screen_title);
     nes_ctx.nes.try_load_save_file(None)?;

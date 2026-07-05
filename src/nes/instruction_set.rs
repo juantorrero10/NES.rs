@@ -269,15 +269,6 @@ pub static INSTRUCTION_LUT: [Instruction6502; 256] = {
     let mut table = [DEF; 256];
     table[0x00] = ins!("BRK", brk, IMM, 2);
 
-    // Unofficial instruction
-    table[0x03] = ins!("SLO", slo, IZX, 8);
-    table[0x07] = ins!("SLO", slo, ZP0, 5);
-    table[0x0F] = ins!("SLO", slo, ABS, 6);
-    table[0x13] = ins!("SLO", slo, IZY, 8);
-    table[0x17] = ins!("SLO", slo, ZPX, 6);
-    table[0x1B] = ins!("SLO", slo, ABY, 7);
-    table[0x1F] = ins!("SLO", slo, ABX, 7);
-
     table[0x69] = ins!("ADC", adc, IMM, 2);
     table[0x65] = ins!("ADC", adc, ZP0, 3);
     table[0x75] = ins!("ADC", adc, ZPX, 4);
@@ -489,6 +480,67 @@ pub static INSTRUCTION_LUT: [Instruction6502; 256] = {
     table[0xD4] = ins!("*NOP", nop, ZPX, 4);
 
     table[0x0C] = ins!("*NOP", nop, ABS, 4);
+
+    // Unofficial instructions
+    table[0x03] = ins!("*SLO", slo, IZX, 8);
+    table[0x07] = ins!("*SLO", slo, ZP0, 5);
+    table[0x0F] = ins!("*SLO", slo, ABS, 6);
+    table[0x13] = ins!("*SLO", slo, IZY, 8);
+    table[0x17] = ins!("*SLO", slo, ZPX, 6);
+    table[0x1B] = ins!("*SLO", slo, ABY, 7);
+    table[0x1F] = ins!("*SLO", slo, ABX, 7);
+
+    table[0x23] = ins!("*RLA", rla, IZX, 8);
+    table[0x27] = ins!("*RLA", rla, ZP0, 5);
+    table[0x2F] = ins!("*RLA", rla, ABS, 6);
+    table[0x33] = ins!("*RLA", rla, IZY, 8);
+    table[0x37] = ins!("*RLA", rla, ZPX, 6);
+    table[0x3B] = ins!("*RLA", rla, ABY, 7);
+    table[0x3F] = ins!("*RLA", rla, ABX, 7);
+
+    table[0x43] = ins!("*SRE", sre, IZX, 8);
+    table[0x47] = ins!("*SRE", sre, ZP0, 5);
+    table[0x4F] = ins!("*SRE", sre, ABS, 6);
+    table[0x53] = ins!("*SRE", sre, IZY, 8);
+    table[0x57] = ins!("*SRE", sre, ZPX, 6);
+    table[0x5B] = ins!("*SRE", sre, ABY, 7);
+    table[0x5F] = ins!("*SRE", sre, ABX, 7);
+
+    table[0x63] = ins!("*RRA", rra, IZX, 8);
+    table[0x67] = ins!("*RRA", rra, ZP0, 5);
+    table[0x6F] = ins!("*RRA", rra, ABS, 6);
+    table[0x73] = ins!("*RRA", rra, IZY, 8);
+    table[0x77] = ins!("*RRA", rra, ZPX, 6);
+    table[0x7B] = ins!("*RRA", rra, ABY, 7);
+    table[0x7F] = ins!("*RRA", rra, ABX, 7);
+
+    table[0x83] = ins!("*SAX", sax, IZX, 6);
+    table[0x87] = ins!("*SAX", sax, ZP0, 3);
+    table[0x8F] = ins!("*SAX", sax, ABS, 4);
+    table[0x97] = ins!("*SAX", sax, ZPY, 4);
+
+    table[0xA3] = ins!("*LAX", lax, IZX, 6);
+    table[0xA7] = ins!("*LAX", lax, ZP0, 3);
+    table[0xAF] = ins!("*LAX", lax, ABS, 4);
+    table[0xB3] = ins!("*LAX", lax, IZY, 5);
+    table[0xB7] = ins!("*LAX", lax, ZPY, 4);
+    table[0xBF] = ins!("*LAX", lax, ABY, 4);
+
+    table[0xC3] = ins!("*DCP", dcp, IZX, 8);
+    table[0xC7] = ins!("*DCP", dcp, ZP0, 5);
+    table[0xCF] = ins!("*DCP", dcp, ABS, 6);
+    table[0xD3] = ins!("*DCP", dcp, IZY, 8);
+    table[0xD7] = ins!("*DCP", dcp, ZPX, 6);
+    table[0xDB] = ins!("*DCP", dcp, ABY, 7);
+    table[0xDF] = ins!("*DCP", dcp, ABX, 7);
+
+    table[0xE3] = ins!("*ISC", isc, IZX, 8);
+    table[0xE7] = ins!("*ISC", isc, ZP0, 5);
+    table[0xEF] = ins!("*ISC", isc, ABS, 6);
+    table[0xF3] = ins!("*ISC", isc, IZY, 8);
+    table[0xF7] = ins!("*ISC", isc, ZPX, 6);
+    table[0xFB] = ins!("*ISC", isc, ABY, 7);
+    table[0xFF] = ins!("*ISC", isc, ABX, 7);
 
     table
 };
@@ -1125,6 +1177,8 @@ pub mod instructions {
         Ok(false)
     });
 
+    // ---------- UNOFFICIAL INSTRUCTIONS ------- 
+
     handler!(slo, c, bus, {
         let mut mem = bus.read(c.state.addr_abs)?;
         c.set_flag(Flag6502::C, (mem & 0x80) != 0);
@@ -1133,6 +1187,96 @@ pub mod instructions {
         c.registers.a |= mem;
         c.set_flag(Flag6502::Z, c.registers.a == 0);
         c.set_flag(Flag6502::N, (c.registers.a & 0x80) != 0);
+        Ok(false)
+    });
+
+    handler!(rla, c, bus, {
+        let mut mem = bus.read(c.state.addr_abs)?;
+        let carry = c.get_flag(Flag6502::C) as u8;
+        c.set_flag(Flag6502::C, (mem & 0x80) != 0);
+        mem = mem << 1 | carry;
+        bus.write(c.state.addr_abs, mem)?;
+        c.registers.a &= mem;
+        c.set_flag(Flag6502::Z, c.registers.a == 0);
+        c.set_flag(Flag6502::N, (c.registers.a & 0x80) != 0);
+        Ok(false)
+    });
+
+    handler!(sre, c, bus, {
+        let mut mem = bus.read(c.state.addr_abs)?;
+        c.set_flag(Flag6502::C, mem & 1 != 0);
+        mem >>= 1;
+        bus.write(c.state.addr_abs, mem)?;
+        c.registers.a ^= mem;
+        c.set_flag(Flag6502::Z, c.registers.a == 0);
+        c.set_flag(Flag6502::N, (c.registers.a & 0x80) != 0);
+        Ok(false)
+    });
+
+    handler!(rra, c, bus, {
+        let mut mem = bus.read(c.state.addr_abs)?;
+        let carry = c.get_flag(Flag6502::C) as u8;
+        c.set_flag(Flag6502::C, mem & 1 != 0);
+        mem = carry << 7 | mem >> 1;
+        bus.write(c.state.addr_abs, mem)?;
+        let result: u16 = c.registers.a as u16 + mem as u16 + c.get_flag(Flag6502::C) as u16;
+        c.set_flag(Flag6502::C, result > 0xFF);
+        c.set_flag(Flag6502::Z, (result & 0x00FF) == 0);
+        c.set_flag(
+            Flag6502::V,
+            ((result ^ c.registers.a as u16) & (result ^ mem as u16) & 0x0080) != 0,
+        );
+        c.set_flag(Flag6502::N, (result & 0x80) != 0);
+        c.registers.a = (result & 0x00FF) as u8;
+        Ok(false)
+    });
+
+    handler!(sax, c, bus, {
+        let result = c.registers.a & c.registers.x;
+        bus.write(c.state.addr_abs, result)?;
+        Ok(false)
+    });
+
+    handler!(lax, c, bus, {
+        let mem = bus.read(c.state.addr_abs)?;
+        c.registers.a = mem;
+        c.registers.x = mem;
+        c.set_flag(Flag6502::Z, c.registers.a == 0);
+        c.set_flag(Flag6502::N, (c.registers.a & 0x80) != 0);
         Ok(true)
+    });
+
+    handler!(dcp, c, bus, {
+        let mut mem = bus.read(c.state.addr_abs)?;
+        mem -= 1;
+        bus.write(c.state.addr_abs, mem)?;
+        let result = c.registers.a.wrapping_sub(mem);
+        c.set_flag(Flag6502::C, c.registers.a >= mem);
+        c.set_flag(Flag6502::Z, result == 0);
+        c.set_flag(Flag6502::N, result > 0x7F);
+        Ok(false)
+    });
+
+    handler!(isc, c, bus, {
+        let mut mem = bus.read(c.state.addr_abs)?;
+        mem += 1;
+        bus.write(c.state.addr_abs, mem)?;
+        let not_mem = (mem ^ 0xFF) as u16;
+        let a = c.registers.a as u16;
+        let carry = c.get_flag(Flag6502::C) as u16;
+        let mut result: u16 = a + not_mem + carry;
+
+        // Set if no underflow ocurred
+        c.set_flag(Flag6502::C, result > 0xFF);
+        c.set_flag(Flag6502::Z, (result & 0x00FF) == 0);
+        c.set_flag(
+            Flag6502::V,
+            ((result ^ a) & (result ^ not_mem) & 0x80) != 0,
+        );
+        let result = (result & 0x00FF) as u8;
+        c.set_flag(Flag6502::N, (result & 0x80) != 0);
+
+        c.registers.a = result;
+        Ok(false)
     });
 }

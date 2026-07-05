@@ -7,6 +7,7 @@ edition = "2024"
 log = []
 
 [dependencies]
+clearscreen = "4.0.6"
 colored = "3.1.1"
 imgui = { version = "0.12.0", features = ["docking"] }
 # lazy_static = "1.5.0"

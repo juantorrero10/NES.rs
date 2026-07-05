@@ -1,5 +1,3 @@
-use serde::Serialize;
-
 use crate::nes::{
     Nes, bus_cpu::{BusCpuChips, BusCpuTarget}, ppu::{ADDR_CHR_END, BusPpuChips, BusPpuTarget},
     game_rom::PpuNameTblMirroring
@@ -8,8 +6,11 @@ use crate::nes::{
 pub mod nrom;
 pub mod mmc3;
 pub mod mmc1;
+pub mod uxrom;
+pub mod cnrom;
+pub mod axrom;
 
-use crate::nes::{MapperInfoReq, NesEvent};
+use crate::nes::{NesEvent};
 
 pub trait Mapper{
     fn cpu_need_intercept(&mut self, addr: u16) -> bool;
