@@ -11,5 +11,5 @@ Supported Mappers:
  - AxROM
  - CNROM
 
-  <img src="https://github.com/juantorrero10/NES.rs/blob/master/assets/smb_debug.png" alt="SMb"/>
-  <img src="https://github.com/juantorrero10/NES.rs/blob/master/assets/smb3.png" alt="SMb3"/>
+  <img src="https://github.com/juantorrero10/NES.rs/blob/master/assets/smb_debug.PNG" alt="SMb"/>
+  <img src="https://github.com/juantorrero10/NES.rs/blob/master/assets/smb3.PNG" alt="SMb3"/>
